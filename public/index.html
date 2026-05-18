@@ -1,395 +1,244 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>智能体聊天</title>
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-      min-height: 100vh;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      padding: 20px;
-    }
-
-    .container {
-      width: 100%;
-      max-width: 800px;
-      background: rgba(255, 255, 255, 0.1);
-      border-radius: 20px;
-      backdrop-filter: blur(10px);
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-      overflow: hidden;
-    }
-
-    .header {
-      background: rgba(0, 0, 0, 0.2);
-      padding: 20px;
-    }
-
-    .header h1 {
-      color: #fff;
-      font-size: 1.5rem;
-      font-weight: 600;
-      text-align: center;
-    }
-
-    .header-top {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-top: 10px;
-    }
-
-    .status {
-      font-size: 0.85rem;
-      color: #aaa;
-    }
-
-    .status.connected {
-      color: #4ade80;
-    }
-
-    .clear-btn {
-      padding: 6px 14px;
-      border: none;
-      border-radius: 6px;
-      background: rgba(255, 107, 107, 0.3);
-      color: #ff6b6b;
-      cursor: pointer;
-      font-size: 0.8rem;
-      transition: background 0.2s;
-    }
-
-    .clear-btn:hover {
-      background: rgba(255, 107, 107, 0.5);
-    }
-
-    .chat-container {
-      height: 500px;
-      overflow-y: auto;
-      padding: 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    .message {
-      max-width: 80%;
-      padding: 12px 16px;
-      border-radius: 12px;
-      line-height: 1.6;
-      animation: fadeIn 0.3s ease;
-      word-wrap: break-word;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(10px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    .message.user {
-      align-self: flex-end;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: #fff;
-      border-bottom-right-radius: 4px;
-    }
-
-    .message.assistant {
-      align-self: flex-start;
-      background: rgba(255, 255, 255, 0.1);
-      color: #fff;
-      border-bottom-left-radius: 4px;
-    }
-
-    .message.system {
-      align-self: center;
-      background: rgba(251, 191, 36, 0.2);
-      color: #ffc107;
-      font-size: 0.85rem;
-      text-align: center;
-      padding: 8px 16px;
-    }
-
-    .input-container {
-      padding: 20px;
-      background: rgba(0, 0, 0, 0.2);
-      display: flex;
-      gap: 10px;
-    }
-
-    .input-container input {
-      flex: 1;
-      padding: 14px 18px;
-      border: none;
-      border-radius: 10px;
-      background: rgba(255, 255, 255, 0.1);
-      color: #fff;
-      font-size: 1rem;
-      outline: none;
-      transition: background 0.3s;
-    }
-
-    .input-container input::placeholder {
-      color: #888;
-    }
-
-    .input-container input:focus {
-      background: rgba(255, 255, 255, 0.15);
-    }
-
-    .input-container button {
-      padding: 14px 28px;
-      border: none;
-      border-radius: 10px;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: #fff;
-      font-size: 1rem;
-      cursor: pointer;
-      transition: transform 0.2s, box-shadow 0.2s;
-    }
-
-    .input-container button:hover:not(:disabled) {
-      transform: translateY(-2px);
-      box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
-    }
-
-    .input-container button:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    .typing-indicator span {
-      display: inline-block;
-      width: 6px;
-      height: 6px;
-      background: rgba(255, 255, 255, 0.7);
-      border-radius: 50%;
-      animation: typing 1.4s infinite;
-      margin: 0 2px;
-    }
-
-    .typing-indicator span:nth-child(2) {
-      animation-delay: 0.2s;
-    }
-
-    .typing-indicator span:nth-child(3) {
-      animation-delay: 0.4s;
-    }
-
-    @keyframes typing {
-      0%, 60%, 100% { transform: translateY(0); }
-      30% { transform: translateY(-8px); }
-    }
-
-    .markdown-content {
-      line-height: 1.6;
-    }
-
-    .markdown-content pre {
-      background: rgba(0, 0, 0, 0.3);
-      padding: 12px;
-      border-radius: 8px;
-      overflow-x: auto;
-      margin: 8px 0;
-    }
-
-    .markdown-content code {
-      font-family: 'Monaco', 'Menlo', monospace;
-      font-size: 0.9em;
-    }
-
-    .markdown-content p {
-      margin: 6px 0;
-    }
-
-    .markdown-content ul, .markdown-content ol {
-      margin: 6px 0;
-      padding-left: 24px;
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>旺财 AI 助手</title>
+<link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
-  <div class="container">
-    <div class="header">
-      <h1>🤖 智能体聊天</h1>
-      <div class="header-top">
-        <div class="status" id="status">连接中...</div>
-        <button class="clear-btn" onclick="clearChat()">清空对话</button>
+<div id="app">
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-header">
+      <h2>旺财设置</h2>
+      <button id="closeSidebar" class="close-btn">&times;</button>
+    </div>
+    <nav class="sidebar-tabs">
+      <button class="tab-btn active" data-tab="character">角色</button>
+      <button class="tab-btn" data-tab="memory">记忆</button>
+      <button class="tab-btn" data-tab="skills">技能</button>
+      <button class="tab-btn" data-tab="model">模型</button>
+      <button class="tab-btn" data-tab="feishu">飞书</button>
+      <button class="tab-btn" data-tab="sessions">会话</button>
+    </nav>
+    <div class="tab-content">
+      <div class="tab-pane active" id="tab-character">
+        <div class="form-group">
+          <label>当前角色</label>
+          <select id="characterSelect"></select>
+        </div>
+        <div class="form-group">
+          <label>角色名称</label>
+          <input id="charName" type="text">
+        </div>
+        <div class="form-group">
+          <label>角色描述</label>
+          <input id="charDesc" type="text">
+        </div>
+        <div class="form-group">
+          <label>身份设定</label>
+          <textarea id="charIdentity" rows="3"></textarea>
+        </div>
+        <div class="form-group">
+          <label>性格特点（逗号分隔）</label>
+          <input id="charTraits" type="text">
+        </div>
+        <div class="form-group">
+          <label>行为规则（每行一条）</label>
+          <textarea id="charRules" rows="4"></textarea>
+        </div>
+        <div class="form-group">
+          <label>知识信息（每行一条）</label>
+          <textarea id="charKnowledge" rows="3"></textarea>
+        </div>
+        <div class="btn-group">
+          <button id="saveCharacter" class="btn primary">保存角色</button>
+          <button id="deleteCharacter" class="btn danger">删除</button>
+          <button id="newCharacter" class="btn">新建角色</button>
+        </div>
+      </div>
+      <div class="tab-pane" id="tab-memory">
+        <div class="form-group">
+          <label>上下文长度限制</label>
+          <div class="input-with-unit">
+            <input id="maxContextLength" type="number" value="5000">
+            <span>tokens</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>保留最近消息数</label>
+          <input id="keepRecent" type="number" value="6">
+        </div>
+        <div class="memory-info">
+          <div class="info-card">
+            <span class="label">重点摘要</span>
+            <p id="memoryDigest">暂无，点击下方按钮生成</p>
+          </div>
+          <div class="info-card">
+            <span class="label">自动提取的关键信息</span>
+            <ul id="memoryKeyInfo"></ul>
+          </div>
+          <div class="info-card">
+            <span class="label">📝 会话记录</span>
+            <div id="sessionMemos"></div>
+          </div>
+          <div class="info-card">
+            <span class="label">🌐 长期记忆</span>
+            <div id="globalMemos"></div>
+          </div>
+        </div>
+        <div class="btn-group">
+          <button id="generateDigest" class="btn primary">🤖 生成重点摘要</button>
+          <button id="refreshMemory" class="btn">刷新</button>
+          <button id="clearMemory" class="btn danger">清除当前记忆</button>
+        </div>
+      </div>
+      <div class="tab-pane" id="tab-skills">
+        <div class="form-group">
+          <label>已加载技能</label>
+          <div id="skillsList" class="skills-list"></div>
+        </div>
+        <div class="btn-group">
+          <button id="reloadSkills" class="btn">重新加载技能</button>
+        </div>
+        <div class="info-box">
+          <strong>技能扩展方式：</strong>
+          <p>在 skills/ 目录下创建 .py 文件，继承 BaseSkill 类，实现 name/description/triggers 属性和 execute 方法，然后点击重新加载即可。</p>
+        </div>
+      </div>
+      <div class="tab-pane" id="tab-model">
+        <div class="form-group">
+          <label>快速选择</label>
+          <select id="modelPreset">
+            <option value="">自定义</option>
+            <option value="nvidia_llama">NVIDIA Llama 3.1 Nemotron (免费)</option>
+            <option value="nvidia_mistral">NVIDIA Mistral Large (免费)</option>
+            <option value="nvidia_deepseek">NVIDIA DeepSeek-R1 (免费)</option>
+            <option value="nvidia_qwen">NVIDIA Qwen2.5 Coder 32B (免费)</option>
+            <option value="openai">OpenAI GPT-4o</option>
+            <option value="openai_gpt4">OpenAI GPT-4</option>
+            <option value="openai_o3">OpenAI o3-mini</option>
+            <option value="claude">Anthropic Claude 3.5</option>
+            <option value="deepseek">DeepSeek Chat</option>
+            <option value="qwen">通义千问</option>
+            <option value="ollama">Ollama (本地)</option>
+            <option value="llamacpp">llama.cpp (本地)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>模型 API 地址</label>
+          <input id="modelApiUrl" type="text" placeholder="http://127.0.0.1:8080/v1">
+        </div>
+        <div class="form-group">
+          <label>模型名称</label>
+          <input id="modelName" type="text" placeholder="llama-2-7b-chat">
+        </div>
+        <div class="form-group">
+          <label>API Key</label>
+          <input id="modelApiKey" type="password" placeholder="sk-...">
+        </div>
+        <div class="form-group">
+          <label>温度 (0-2)</label>
+          <input id="modelTemperature" type="number" step="0.1" min="0" max="2" value="0.7">
+        </div>
+        <div class="form-group">
+          <label>最大输出 Tokens</label>
+          <input id="modelMaxTokens" type="number" value="2048">
+        </div>
+        <div class="btn-group">
+          <button id="saveModelConfig" class="btn primary">保存模型配置</button>
+          <button id="testModelBtn" class="btn">测试连接</button>
+        </div>
+        <div id="testResult" class="info-box" style="display:none"></div>
+      </div>
+      <div class="tab-pane" id="tab-feishu">
+        <div class="form-group">
+          <label>启用飞书机器人</label>
+          <label class="switch">
+            <input id="feishuEnabled" type="checkbox">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label>App ID</label>
+          <input id="feishuAppId" type="text">
+        </div>
+        <div class="form-group">
+          <label>App Secret</label>
+          <input id="feishuAppSecret" type="password">
+        </div>
+        <div class="form-group">
+          <label>接收消息用户ID (receive_id)</label>
+          <input id="feishuReceiveId" type="text" placeholder="open_id / user_id">
+        </div>
+        <div class="form-group">
+          <label>接收ID类型</label>
+          <select id="feishuReceiveIdType">
+            <option value="open_id">open_id</option>
+            <option value="user_id">user_id</option>
+            <option value="chat_id">chat_id</option>
+          </select>
+        </div>
+        <div class="form-group" style="border-top:1px solid var(--border);padding-top:12px;margin-top:8px">
+          <label>查询我的 Open ID</label>
+          <div style="display:flex;gap:6px">
+            <input id="feishuLookupInput" type="text" placeholder="输入邮箱或手机号" style="flex:1">
+            <button id="feishuLookupBtn" class="btn">获取</button>
+          </div>
+          <div id="feishuLookupResult" class="info-box" style="display:none;margin-top:6px"></div>
+        </div>
+        <div class="info-box">
+          <strong>配置说明（WebSocket 模式，无需公网）：</strong>
+          <p>1. 在飞书开放平台创建应用</p>
+          <p>2. 开启机器人能力</p>
+          <p>3. 事件订阅方式选择 <strong>WebSocket</strong></p>
+          <p>4. 订阅 <code>im.message.receive_v1</code> 事件</p>
+          <p>5. 添加权限：<code>im:message</code>、<code>contact:user.email</code></p>
+        </div>
+        <div class="btn-group">
+          <button id="saveFeishuConfig" class="btn primary">保存飞书配置</button>
+          <button id="testFeishuBtn" class="btn">测试连接</button>
+          <button id="sendTestMsgBtn" class="btn">发送测试消息</button>
+        </div>
+        <div id="feishuTestResult" class="info-box" style="display:none"></div>
+        <div id="feishuSendResult" class="info-box" style="display:none"></div>
+      </div>
+      <div class="tab-pane" id="tab-sessions">
+        <div class="form-group">
+          <label>历史会话</label>
+          <div id="sessionsList" class="sessions-list"></div>
+        </div>
       </div>
     </div>
-    <div class="chat-container" id="chatContainer"></div>
-    <div class="input-container">
-      <input type="text" id="messageInput" placeholder="输入消息..." autocomplete="off">
-      <button id="sendBtn" onclick="sendMessage()">发送</button>
+  </aside>
+  <div id="sidebarOverlay" class="sidebar-overlay"></div>
+  <main id="main">
+    <header class="chat-header">
+      <button id="openSidebar" class="menu-btn">&#9776;</button>
+      <div class="header-info">
+        <h1 id="currentCharName">旺财</h1>
+        <span id="currentCharDesc" class="subtitle">AI 助手</span>
+      </div>
+      <div class="header-status">
+        <span id="statusIndicator" class="status-dot" title="连接状态"></span>
+        <span id="statusText">未连接</span>
+      </div>
+    </header>
+    <div id="chatMessages" class="chat-messages">
+      <div id="emptyState" class="empty-state">
+        <div class="empty-icon">🐾</div>
+        <div class="empty-text">开始和旺财对话吧</div>
+      </div>
     </div>
-  </div>
+    <div class="chat-input-area">
+      <textarea id="chatInput" rows="2" placeholder="输入消息，Enter 发送，Shift+Enter 换行..."></textarea>
+      <button id="sendBtn" class="btn primary send-btn">发送</button>
+    </div>
+  </main>
+</div>
 
-  <script>
-    let ws = null;
-    let sessionId = 'session-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
-    let isGenerating = false;
+<div id="toast" class="toast"></div>
 
-    // 连接 WebSocket
-    function connect() {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-
-      ws.onopen = () => {
-        document.getElementById('status').textContent = '● 已连接';
-        document.getElementById('status').classList.add('connected');
-      };
-
-      ws.onclose = () => {
-        document.getElementById('status').textContent = '○ 已断开';
-        document.getElementById('status').classList.remove('connected');
-        console.log('重连中...');
-        setTimeout(connect, 2000);
-      };
-
-      ws.onerror = (error) => {
-        console.error('WebSocket 错误:', error);
-      };
-
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        handleServerMessage(data);
-      };
-    }
-
-    // 处理服务器消息
-    function handleServerMessage(data) {
-      switch (data.type) {
-        case 'chunk':
-          if (isGenerating) {
-            appendToLastAssistantMessage(data.content);
-          } else {
-            isGenerating = true;
-            addAssistantMessage(data.content, true);
-          }
-          break;
-        case 'done':
-          isGenerating = false;
-          removeTypingIndicator();
-          scrollToBottom();
-          break;
-        case 'error':
-          addSystemMessage('错误：' + data.message);
-          isGenerating = false;
-          break;
-      }
-    }
-
-    // 添加消息
-    function addMessage(text, type) {
-      const container = document.getElementById('chatContainer');
-      const messageDiv = document.createElement('div');
-      messageDiv.className = `message ${type}`;
-      messageDiv.innerHTML = formatMessage(text);
-      container.appendChild(messageDiv);
-      scrollToBottom();
-    }
-
-    // 格式化消息（简单处理换行）
-    function formatMessage(text) {
-      return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/\n/g, '<br>');
-    }
-
-    // 添加用户消息
-    function addUserMessage(text) {
-      addMessage(text, 'user');
-    }
-
-    // 添加助手消息
-    function addAssistantMessage(text, isStreaming = false) {
-      const container = document.getElementById('chatContainer');
-      const messageDiv = document.createElement('div');
-      messageDiv.className = 'message assistant';
-      messageDiv.id = 'last-assistant-message';
-      messageDiv.innerHTML = formatMessage(text);
-      if (isStreaming) {
-        messageDiv.innerHTML += '<span class="typing-indicator"><span></span><span></span><span></span></span>';
-      }
-      container.appendChild(messageDiv);
-      scrollToBottom();
-    }
-
-    // 追加到最后一条助手消息
-    function appendToLastAssistantMessage(text) {
-      const lastMessage = document.getElementById('last-assistant-message');
-      if (lastMessage) {
-        const typingIndicator = lastMessage.querySelector('.typing-indicator');
-        if (typingIndicator) {
-          typingIndicator.remove();
-        }
-        const currentText = lastMessage.textContent;
-        lastMessage.innerHTML = formatMessage(currentText + text);
-      }
-    }
-
-    // 添加系统消息
-    function addSystemMessage(text) {
-      addMessage(text, 'system');
-    }
-
-    // 移除打字指示器
-    function removeTypingIndicator() {
-      const indicator = document.querySelector('.typing-indicator');
-      if (indicator) {
-        indicator.remove();
-      }
-    }
-
-    // 滚动到底部
-    function scrollToBottom() {
-      const container = document.getElementById('chatContainer');
-      container.scrollTop = container.scrollHeight;
-    }
-
-    // 发送消息
-    function sendMessage() {
-      const input = document.getElementById('messageInput');
-      const text = input.value.trim();
-      
-      if (!text || isGenerating) return;
-
-      addUserMessage(text);
-      input.value = '';
-
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ message: text, session_id: sessionId }));
-      }
-    }
-
-    // 清空对话
-    function clearChat() {
-      document.getElementById('chatContainer').innerHTML = '';
-      sessionId = 'session-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
-      addSystemMessage('对话已清空');
-    }
-
-    // 回车发送
-    document.getElementById('messageInput').addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
-        sendMessage();
-      }
-    });
-
-    // 启动连接
-    connect();
-  </script>
+<script src="/static/js/app.js?v=3"></script>
 </body>
 </html>

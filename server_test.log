@@ -1,0 +1,8 @@
+📡 模型服务地址：https://api.deepseek.com/v1
+📦 模型名称：deepseek-chat
+🧠 角色系统已加载，当前角色：default
+💾 记忆系统已加载，上下文上限：5000
+🔧 技能引擎已加载，技能数：5
+📱 飞书机器人未启用
+
+🚀 启动服务器：http://localhost:9527/

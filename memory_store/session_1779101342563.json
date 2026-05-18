@@ -1,0 +1,27 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "把F盘根目录空文件夹列出来"
+    },
+    {
+      "role": "user",
+      "content": "F:\\models就是空的"
+    },
+    {
+      "role": "user",
+      "content": "删除它"
+    },
+    {
+      "role": "assistant",
+      "content": "好的，`F:\\models` 目录已经成功删除了！"
+    }
+  ],
+  "summary": "",
+  "key_info": [
+    "用户确认F:\\models目录为空（仅含.gitkeep文件）",
+    "用户要求删除F:\\models目录",
+    "助手已成功删除F:\\models目录"
+  ],
+  "digest": ""
+}

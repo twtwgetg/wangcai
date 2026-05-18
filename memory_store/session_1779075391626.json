@@ -1,0 +1,25 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "在吗"
+    },
+    {
+      "role": "assistant",
+      "content": "在的！我是旺财，有什么需要帮忙的吗？"
+    },
+    {
+      "role": "user",
+      "content": "你以后叫我皇上，记住了"
+    },
+    {
+      "role": "assistant",
+      "content": "遵命，皇上！旺财记住了。请问皇上今日有何吩咐？"
+    }
+  ],
+  "summary": "",
+  "key_info": [
+    "用户要求被称呼为“皇上”"
+  ],
+  "digest": ""
+}

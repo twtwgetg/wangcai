@@ -1,38 +1,95 @@
 import os
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
-from typing import Dict, List
+import re
 import json
+import asyncio
+import logging
+import sys
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, JSONResponse
+from typing import Dict, List, Optional
 
-app = FastAPI(title="本地 LLM 智能体")
+logger = logging.getLogger("feishu")
 
-# 挂载静态文件
+from config import load_config, save_config, get_llm_config, get_server_config
+from character import CharacterManager
+from memory import MemoryManager
+from skill import SkillEngine
+
+app = FastAPI(title="旺财 AI 助手")
+
 app.mount("/static", StaticFiles(directory="public"), name="static")
 
-# 模型服务配置
-MODEL_API_URL = os.environ.get("MODEL_API_URL", "http://127.0.0.1:8080/v1")
-MODEL_NAME = os.environ.get("MODEL_NAME", "llama-2-7b-chat")
+char_mgr = CharacterManager()
+mem_mgr = MemoryManager()
+skill_engine = SkillEngine()
 
-# 对话存储
-conversations: Dict[str, List[dict]] = {}
+llm_config = get_llm_config()
+MODEL_API_URL = os.environ.get("MODEL_API_URL", llm_config.get("api_url", "http://127.0.0.1:8080/v1"))
+MODEL_NAME = os.environ.get("MODEL_NAME", llm_config.get("model_name", "llama-2-7b-chat"))
+MODEL_API_KEY = os.environ.get("MODEL_API_KEY", llm_config.get("api_key", ""))
 
-print(f"📡 模型服务地址：{MODEL_API_URL}")
-print(f"📦 模型名称：{MODEL_NAME}")
+feishu_bot = None
+
+print(f"[Model] API: {MODEL_API_URL}")
+print(f"[Model] Name: {MODEL_NAME}")
+print(f"[Role] {char_mgr.get_current_name()}")
+print(f"[Memory] Context limit: {mem_mgr.max_context_length}")
+print(f"[Skills] Loaded: {len(skill_engine.skills)}")
+
+
+_feishu_ws_thread = None
+
+def init_feishu(force=False):
+    global feishu_bot, _feishu_ws_thread
+    if feishu_bot is None or force:
+        from feishu_bot import FeishuBot
+        feishu_bot = FeishuBot(message_handler=handle_feishu_message)
+        if feishu_bot.enabled:
+            logger.info("飞书机器人已启用 app_id=%s...", feishu_bot.app_id[:8])
+        else:
+            logger.info("飞书机器人未启用")
+
+async def start_feishu_ws():
+    global _feishu_ws_thread
+    if feishu_bot and feishu_bot.enabled:
+        await feishu_bot.start_ws_listener()
+        logger.info("飞书 WS 监听已启动")
+
+
+async def handle_feishu_message(session_id: str, message: str, source: str = "feishu"):
+    logger.info("处理消息: %s", message[:200])
+    full_response = ""
+    error_msg = None
+
+    async def on_chunk(chunk):
+        nonlocal full_response
+        full_response += chunk
+
+    try:
+        await send_to_llm(message, session_id, on_chunk, source=source)
+        if not full_response.strip():
+            error_msg = "模型返回为空，请检查模型服务是否正常"
+    except Exception as e:
+        error_msg = "处理消息时出错: %s" % e
+        logger.error("处理错误: %s", e)
+
+    if error_msg:
+        logger.info("返回错误: %s", error_msg)
+        return error_msg
+    logger.info("回复: %s", full_response[:200])
+    return full_response or "已收到"
 
 
 @app.get("/")
 async def root():
-    """返回聊天页面"""
-    from fastapi.responses import HTMLResponse
-
     with open("public/index.html", "r", encoding="utf-8") as f:
         return HTMLResponse(content=f.read())
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket 聊天接口"""
     await websocket.accept()
     client_id = id(websocket)
     session_id = f"session_{client_id}"
@@ -43,60 +100,369 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
             message_data = json.loads(data)
-            user_message = message_data.get("message", "")
-            session_id = message_data.get("session_id", session_id)
+            msg_type = message_data.get("type", "chat")
 
-            print(f"收到消息：{user_message[:50]}...")
+            if msg_type == "chat":
+                user_message = message_data.get("message", "")
+                session_id = message_data.get("session_id", session_id)
+                print(f"收到消息：{user_message[:50]}...")
 
-            # 响应处理
-            async def handle_chunk(chunk):
-                await websocket.send_json({"type": "chunk", "content": chunk})
+                if user_message.strip() == "/help":
+                    help_text = (
+                        "📚 可用命令：\n\n"
+                        "📱 /wechat \"联系人\" \"消息\" - 给微信联系人发送消息\n"
+                        "  示例：/wechat \"文件传输助手\" \"你好\"\n\n"
+                        "🧠 /memory - 查看当前会话记忆\n"
+                        "🔄 /clearmemory - 清除当前会话记忆\n\n"
+                        "💡 更多功能请在设置面板中配置"
+                    )
+                    await websocket.send_json({"type": "chunk", "content": help_text})
+                    await websocket.send_json({"type": "done"})
+                    continue
 
-            # 发送消息给 LLM
-            await send_to_llm(user_message, session_id, handle_chunk)
+                async def handle_chunk(chunk):
+                    await websocket.send_json({"type": "chunk", "content": chunk})
 
-            # 完成消息
-            await websocket.send_json({"type": "done"})
+                async def handle_reset():
+                    await websocket.send_json({"type": "clear_stream"})
+
+                await send_to_llm(user_message, session_id, handle_chunk, source="web", on_reset=handle_reset)
+                await websocket.send_json({"type": "done"})
+
+            elif msg_type == "command":
+                cmd = message_data.get("command", "")
+                params = message_data.get("params", {})
+
+                if cmd == "clear_memory":
+                    session_id = params.get("session_id", session_id)
+                    mem_mgr.delete_session(session_id)
+                    await websocket.send_json({"type": "command_result", "command": cmd, "success": True})
+
+                elif cmd == "get_sessions":
+                    sessions = mem_mgr.list_sessions()
+                    await websocket.send_json({"type": "command_result", "command": cmd, "data": sessions})
+
+            elif msg_type == "get_characters":
+                chars = char_mgr.list_characters()
+                await websocket.send_json({"type": "characters", "data": chars})
+
+            elif msg_type == "switch_character":
+                name = message_data.get("name", "")
+                success = char_mgr.switch_to(name)
+                await websocket.send_json({"type": "character_switched", "success": success, "name": name})
+
+            elif msg_type == "get_character_detail":
+                name = message_data.get("name", "")
+                profile = char_mgr.get_profile(name)
+                await websocket.send_json({"type": "character_detail", "data": profile})
+
+            elif msg_type == "save_character":
+                name = message_data.get("name", "")
+                profile = message_data.get("profile", {})
+                char_mgr.save_profile(name, profile)
+                await websocket.send_json({"type": "character_saved", "success": True, "name": name})
+
+            elif msg_type == "delete_character":
+                name = message_data.get("name", "")
+                success = char_mgr.delete_profile(name)
+                await websocket.send_json({"type": "character_deleted", "success": success})
+
+            elif msg_type == "get_config":
+                config = load_config()
+                await websocket.send_json({"type": "config", "data": config})
+
+            elif msg_type == "save_config":
+                new_config = message_data.get("config", {})
+                existing = load_config()
+                for key in new_config:
+                    existing[key] = new_config[key]
+                save_config(existing)
+                global MODEL_API_URL, MODEL_NAME, MODEL_API_KEY
+                MODEL_API_URL = existing.get("llm", {}).get("api_url", MODEL_API_URL)
+                MODEL_NAME = existing.get("llm", {}).get("model_name", MODEL_NAME)
+                MODEL_API_KEY = existing.get("llm", {}).get("api_key", MODEL_API_KEY)
+                mem_mgr.set_max_context_length(
+                    existing.get("memory", {}).get("max_context_length", 5000)
+                )
+                await websocket.send_json({"type": "config_saved", "success": True})
+
+            elif msg_type == "get_memory":
+                session_id = message_data.get("session_id", session_id)
+                _, summary, key_info, digest = mem_mgr.get_context(session_id)
+                memos = []
+                global_memos = []
+                try:
+                    import json as _json
+                    memo_path = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        "memory_store", "memos"
+                    )
+                    safe = session_id.replace("/", "_").replace("\\", "_").replace(":", "_")
+                    session_memo_file = os.path.join(memo_path, f"{safe}.json")
+                    global_memo_file = os.path.join(memo_path, "_global.json")
+                    if os.path.exists(session_memo_file):
+                        with open(session_memo_file, "r", encoding="utf-8") as f:
+                            memos = _json.load(f)
+                    if os.path.exists(global_memo_file):
+                        with open(global_memo_file, "r", encoding="utf-8") as f:
+                            global_memos = _json.load(f)
+                except Exception:
+                    pass
+                await websocket.send_json({
+                    "type": "memory",
+                    "data": {
+                        "summary": summary,
+                        "key_info": key_info,
+                        "digest": digest,
+                        "memos": memos[-20:],
+                        "global_memos": global_memos[-20:],
+                    }
+                })
+
+            elif msg_type == "summarize_now":
+                sid = message_data.get("session_id", session_id)
+                await websocket.send_json({"type": "chunk", "content": "🤖 正在生成重点摘要...\n"})
+                result = await generate_digest(sid)
+                mem_mgr.set_digest(sid, result)
+                mem_mgr.save_all()
+                await websocket.send_json({"type": "chunk", "content": "✅ 摘要已更新\n"})
+                _, _, _, digest = mem_mgr.get_context(sid)
+                await websocket.send_json({
+                    "type": "memory",
+                    "data": {
+                        "summary": mem_mgr.get_summary(sid),
+                        "key_info": mem_mgr.get_key_info(sid),
+                        "digest": digest,
+                    }
+                })
+                await websocket.send_json({"type": "done"})
+
+            elif msg_type == "get_sessions_list":
+                sessions = mem_mgr.list_sessions()
+                await websocket.send_json({"type": "sessions_list", "data": sessions})
+
+            elif msg_type == "delete_session":
+                sid = message_data.get("session_id", "")
+                success = mem_mgr.delete_session(sid)
+                await websocket.send_json({"type": "session_deleted", "success": success, "session_id": sid})
+
+            elif msg_type == "get_skills":
+                skills = skill_engine.list_skills()
+                await websocket.send_json({"type": "skills_list", "data": skills})
+
+            elif msg_type == "reload_skills":
+                skill_engine.reload_skills()
+                skills = skill_engine.list_skills()
+                await websocket.send_json({"type": "skills_reloaded", "data": skills})
+
+            elif msg_type == "get_feishu_config":
+                init_feishu()
+                if feishu_bot:
+                    await websocket.send_json({
+                        "type": "feishu_config",
+                        "data": feishu_bot.get_config_info()
+                    })
+
+            elif msg_type == "save_feishu_config":
+                fb_config = message_data.get("config", {})
+                if feishu_bot:
+                    feishu_bot.update_config(
+                        enabled=fb_config.get("enabled"),
+                        app_id=fb_config.get("app_id"),
+                        app_secret=fb_config.get("app_secret"),
+                        receive_id=fb_config.get("receive_id"),
+                        receive_id_type=fb_config.get("receive_id_type"),
+                        bot_name=fb_config.get("bot_name"),
+                    )
+                init_feishu(force=True)
+                await start_feishu_ws()
+                await websocket.send_json({"type": "feishu_config_saved", "success": True})
+
+            elif msg_type == "test_feishu":
+                if not feishu_bot or not feishu_bot.enabled:
+                    await websocket.send_json({
+                        "type": "test_feishu_result",
+                        "success": False,
+                        "msg": "飞书未启用，请先保存配置",
+                    })
+                else:
+                    ok = await feishu_bot.check_connection()
+                    await websocket.send_json({
+                        "type": "test_feishu_result",
+                        "success": ok,
+                        "msg": "飞书连接成功" if ok else "飞书连接失败，请检查 app_id 和 app_secret",
+                    })
+
+            elif msg_type == "test_model":
+                cfg = message_data.get("config", {})
+                test_url = cfg.get("api_url", MODEL_API_URL)
+                test_model = cfg.get("model_name", MODEL_NAME)
+                test_key = cfg.get("api_key", MODEL_API_KEY)
+                try:
+                    headers = {"Content-Type": "application/json"}
+                    if test_key:
+                        headers["Authorization"] = f"Bearer {test_key}"
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        resp = await client.post(
+                            f"{test_url}/chat/completions",
+                            headers=headers,
+                            json={
+                                "model": test_model,
+                                "messages": [{"role": "user", "content": "回复'连接成功'即可"}],
+                                "max_tokens": 50,
+                                "stream": False,
+                            },
+                        )
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            reply = data["choices"][0]["message"]["content"]
+                            await websocket.send_json({
+                                "type": "test_model_result",
+                                "success": True,
+                                "response": reply[:200],
+                            })
+                        else:
+                            await websocket.send_json({
+                                "type": "test_model_result",
+                                "success": False,
+                                "error": f"HTTP {resp.status_code}: {resp.text[:300]}",
+                            })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "test_model_result",
+                        "success": False,
+                        "error": str(e),
+                    })
 
     except WebSocketDisconnect:
         print(f"客户端断开：{client_id}")
     except Exception as e:
         print(f"错误：{e}")
-        await websocket.send_json({"type": "error", "message": str(e)})
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
 
 
-async def send_to_llm(message: str, session_id: str, on_chunk):
-    """通过 HTTP API 发送消息给 LLM 并流式返回响应"""
+async def call_llm(messages, max_tokens=200, stream=False):
+    """通用 LLM 调用，返回完整响应文本"""
+    headers = {"Content-Type": "application/json"}
+    if MODEL_API_KEY:
+        headers["Authorization"] = f"Bearer {MODEL_API_KEY}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{MODEL_API_URL}/chat/completions",
+                headers=headers,
+                json={
+                    "model": MODEL_NAME,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    "stream": stream,
+                    "temperature": 0.3,
+                },
+            )
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+    except Exception:
+        return None
 
-    # 系统提示词
-    system_prompt = """You are a helpful AI assistant. Provide detailed, thoughtful responses to the user's questions."""
 
-    # 获取对话历史
-    if session_id not in conversations:
-        conversations[session_id] = []
+async def extract_key_points(session_id, user_msg, assistant_msg):
+    """自动提取本轮对话的关键信息并更新记忆"""
+    from memory import build_summarize_prompt
+    existing = mem_mgr.get_summary(session_id)
+    existing_keys = mem_mgr.get_key_info(session_id)
+    prompt_text = build_summarize_prompt(user_msg, assistant_msg, existing, existing_keys)
+    result = await call_llm([{"role": "user", "content": prompt_text}], max_tokens=300)
+    if result and result.strip() != "无":
+        lines = [l.strip().lstrip("- ") for l in result.split("\n") if l.strip() and l.strip() != "无"]
+        for line in lines:
+            if len(line) > 5:
+                mem_mgr.add_key_info(session_id, line)
+        mem_mgr.save_all()
 
-    # 构建消息列表
+
+async def generate_digest(session_id):
+    """用 LLM 生成对话重点摘要"""
+    from memory import build_summary_prompt
+    messages, _, _, _ = mem_mgr.get_context(session_id)
+    if not messages:
+        return "暂无对话内容"
+    prompt_text = build_summary_prompt(messages)
+    result = await call_llm([{"role": "user", "content": prompt_text}], max_tokens=400)
+    return result or "摘要生成失败"
+
+
+async def send_to_llm(message: str, session_id: str, on_chunk, source: str = "web", on_reset=None):
+    wechat_pattern = r'/wechat\s+["\']?([^"\']+)["\']?\s+["\']?(.+)["\']?$'
+    match = re.match(wechat_pattern, message)
+    if match:
+        contact_name = match.group(1)
+        chat_message = match.group(2)
+        from wechat_auto import search_and_chat
+        await on_chunk(f"📱 正在给 '{contact_name}' 发送消息...\n")
+        loop = asyncio.get_event_loop()
+
+        def run_wechat():
+            try:
+                result = search_and_chat(contact_name, chat_message, auto_find_window=True)
+                if result and result.startswith("❌"):
+                    return False, result
+                return True, None
+            except Exception as e:
+                return False, str(e)
+
+        success, error = await loop.run_in_executor(None, run_wechat)
+        if success:
+            await on_chunk(f"✅ 已给 '{contact_name}' 发送消息：{chat_message}\n")
+        else:
+            await on_chunk(f"❌ 执行失败：{error}\n")
+        return
+
+    mem_mgr.add_user_message(session_id, message)
+
+    condensed_messages, summary, key_info, digest = mem_mgr.get_condensed_context(session_id)
+
+    memory_summary = ""
+    if summary:
+        memory_summary += f"对话摘要：{summary}\n"
+    if key_info:
+        memory_summary += "关键信息：\n" + "\n".join([f"- {k}" for k in key_info])
+    if digest:
+        memory_summary += f"\n重点摘要：{digest}\n"
+
+    system_prompt = char_mgr.build_system_prompt(memory_summary)
+    tools_prompt = skill_engine.get_tools_prompt()
+    if tools_prompt:
+        system_prompt += "\n\n" + tools_prompt
+
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(conversations[session_id][-20:])  # 保留最近 20 条
+    messages.extend(condensed_messages)
     messages.append({"role": "user", "content": message})
 
-    # 生成响应
     full_response = ""
 
     try:
+        headers = {"Content-Type": "application/json"}
+        if MODEL_API_KEY:
+            headers["Authorization"] = f"Bearer {MODEL_API_KEY}"
+
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
                 f"{MODEL_API_URL}/chat/completions",
+                headers=headers,
                 json={
                     "model": MODEL_NAME,
                     "messages": messages,
                     "stream": True,
-                    "temperature": 0.7,
-                    "max_tokens": 2048,
+                    "temperature": llm_config.get("temperature", 0.7),
+                    "max_tokens": llm_config.get("max_tokens", 2048),
                 },
             )
 
-            # 读取流式响应
             async for line in response.aiter_lines():
                 if line.startswith("data: "):
                     data_str = line[6:]
@@ -115,23 +481,215 @@ async def send_to_llm(message: str, session_id: str, on_chunk):
                     except json.JSONDecodeError:
                         continue
 
-        # 保存对话
-        conversations[session_id].append({"role": "user", "content": message})
-        conversations[session_id].append(
-            {"role": "assistant", "content": full_response}
-        )
+        tool_match = re.search(r'\[TOOL_CALL\](.*?)\[/TOOL_CALL\]', full_response, re.DOTALL)
+        if tool_match:
+            tool_result = await skill_engine.execute_tool_call(full_response, {"session_id": session_id})
+            if tool_result:
+                clean_response = re.sub(r'\s*\[TOOL_CALL\].*?\[/TOOL_CALL\]\s*', '', full_response, flags=re.DOTALL).strip()
+                if on_reset:
+                    await on_reset()
+                mem_mgr.pop_last_assistant(session_id)
+                messages.append({"role": "assistant", "content": clean_response or "(调用了工具)"})
+                messages.append({"role": "user", "content": f"工具执行结果：\n{tool_result}\n\n请根据工具执行结果，用中文整理一份完整的回复给用户。不要提及工具调用的技术细节，直接告诉用户结果。"})
+
+                formatted = ""
+                async with httpx.AsyncClient(timeout=120.0) as client2:
+                    resp2 = await client2.post(
+                        f"{MODEL_API_URL}/chat/completions",
+                        headers=headers,
+                        json={
+                            "model": MODEL_NAME,
+                            "messages": messages,
+                            "stream": True,
+                            "temperature": llm_config.get("temperature", 0.7),
+                            "max_tokens": llm_config.get("max_tokens", 2048),
+                        },
+                    )
+                    async for line in resp2.aiter_lines():
+                        if line.startswith("data: "):
+                            ds = line[6:]
+                            if ds == "[DONE]":
+                                break
+                            try:
+                                d = json.loads(ds)
+                                c = d.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                                if c:
+                                    formatted += c
+                                    await on_chunk(c)
+                            except json.JSONDecodeError:
+                                continue
+                full_response = formatted
+
+        mem_mgr.add_assistant_message(session_id, full_response)
+        mem_mgr.save_all()
+
+        if tool_match:
+            char_mgr.reload_current()
+
+        asyncio.ensure_future(extract_key_points(session_id, message, full_response))
 
     except httpx.ConnectError:
         await on_chunk(
-            f"\n\n⚠️ 无法连接到模型服务：{MODEL_API_URL}\n请确保 llama-server 或其他兼容服务正在运行。"
+            f"\n\n⚠️ 无法连接到模型服务：{MODEL_API_URL}\n请确保模型服务正在运行。"
         )
     except Exception as e:
+        from traceback import format_exc
         await on_chunk(f"\n\n⚠️ 错误：{e}")
+        print(format_exc())
+
+
+@app.post("/feishu/webhook")
+async def feishu_webhook(request: Request):
+    init_feishu()
+    body = await request.json()
+
+    if "challenge" in body:
+        return JSONResponse({"challenge": body["challenge"]})
+
+    event = body.get("event", {})
+    header = body.get("header", {})
+
+    open_id = (event.get("sender", {}).get("sender_id", {}).get("open_id", "")
+               or event.get("sender", {}).get("open_id", ""))
+    event_type = (header.get("event_type", "")
+                  or event.get("event_type", "")
+                  or body.get("event_type", ""))
+    msg_content = event.get("message", {}).get("content", "")
+    try:
+        msg_text = json.loads(msg_content).get("text", msg_content) if msg_content else ""
+    except Exception:
+        msg_text = msg_content
+
+    if open_id and msg_text:
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("收到飞书消息 来自=%s 内容=%s", open_id, msg_text[:200])
+        logger.info("=" * 60)
+        logger.info("")
+
+    if not feishu_bot or not feishu_bot.enabled:
+        logger.info("webhook未启用 event_type=%s", event_type)
+        return JSONResponse({"msg": "feishu not enabled"})
+
+    result = await feishu_bot.handle_webhook(body)
+    return JSONResponse(result)
+
+
+@app.post("/feishu/event")
+async def feishu_event(request: Request):
+    """兼容 schema 1.0 的事件回调（同 Flask 示例）"""
+    init_feishu()
+    data = await request.json()
+    if "challenge" in data:
+        return JSONResponse({"challenge": data["challenge"]})
+    event = data.get("event", {})
+    if event.get("type") == "message":
+        sender_open_id = event.get("sender", {}).get("open_id", "")
+        if sender_open_id:
+            logger.info("")
+            logger.info("=" * 60)
+            logger.info("收到飞书消息 OPEN_ID=%s", sender_open_id)
+            logger.info("=" * 60)
+            logger.info("")
+    return JSONResponse({"code": 0})
+
+
+@app.get("/api/feishu/log")
+async def api_feishu_log(lines: int = 50):
+    log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feishu.log")
+    if not os.path.exists(log_file):
+        return {"success": True, "lines": []}
+    with open(log_file, "r", encoding="utf-8") as f:
+        all_lines = f.read().splitlines()
+    return {"success": True, "lines": all_lines[-lines:]}
+
+
+@app.post("/feishu/test")
+async def feishu_test(request: Request):
+    init_feishu()
+    if not feishu_bot or not feishu_bot.enabled:
+        return JSONResponse({"ok": False, "msg": "飞书未启用，请在设置中配置"})
+    token_ok = await feishu_bot.check_connection()
+    return JSONResponse({
+        "ok": token_ok,
+        "msg": "token获取成功" if token_ok else "token获取失败，检查 app_id 和 app_secret 是否正确",
+    })
+
+
+@app.get("/api/feishu/test-token")
+async def api_feishu_test_token():
+    init_feishu()
+    if not feishu_bot or not feishu_bot.app_id:
+        return {"success": False, "error": "请先配置 app_id 和 app_secret"}
+    try:
+        token = await feishu_bot._get_token()
+        if token:
+            return {"success": True, "token": "***" + token[-6:], "expire_time": feishu_bot._token_expire}
+        else:
+            return {"success": False, "error": "获取Token失败，请检查 app_id 和 app_secret"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/feishu/test-message")
+async def api_feishu_test_message(params: dict = None):
+    init_feishu()
+    if not feishu_bot or not feishu_bot.app_id:
+        return {"success": False, "error": "请先配置 app_id 和 app_secret"}
+    if params is None:
+        params = {}
+    result = await feishu_bot.send_test_message(
+        text=params.get("text"), receive_id=params.get("receiveId"),
+        receive_id_type=params.get("receiveIdType"),
+    )
+    return result
+
+
+@app.get("/api/feishu/config-info")
+async def api_feishu_config_info():
+    init_feishu()
+    if not feishu_bot:
+        return {"success": False, "error": "飞书未初始化"}
+    return {"success": True, "data": feishu_bot.get_config_info()}
+
+
+@app.post("/api/feishu/lookup-user")
+async def api_feishu_lookup_user(params: dict = None):
+    init_feishu()
+    if not feishu_bot or not feishu_bot.app_id:
+        return {"success": False, "error": "请先配置 app_id 和 app_secret"}
+    if params is None:
+        params = {}
+    email = params.get("email", "").strip()
+    mobile = params.get("mobile", "").strip()
+    if not email and not mobile:
+        return {"success": False, "error": "请输入邮箱或手机号"}
+    result = await feishu_bot.lookup_user(email=email or None, mobile=mobile or None)
+    return result
+
+
+@app.get("/api/status")
+async def api_status():
+    ws_alive = _feishu_ws_thread is not None and _feishu_ws_thread.is_alive() if feishu_bot else False
+    return {
+        "status": "running",
+        "model": MODEL_NAME,
+        "model_api": MODEL_API_URL,
+        "character": char_mgr.get_current_name(),
+        "skills": len(skill_engine.skills),
+        "feishu_enabled": feishu_bot.enabled if feishu_bot else False,
+        "feishu_ws": ws_alive,
+    }
+
+
+@app.on_event("startup")
+async def on_startup():
+    init_feishu()
+    await start_feishu_ws()
 
 
 if __name__ == "__main__":
     import uvicorn
-
-    port = int(os.environ.get("PORT", 8000))
-    print(f"\n🚀 启动服务器：http://localhost:{port}")
+    port = int(os.environ.get("PORT", get_server_config().get("port", 8000)))
+    print("\n启动服务器: http://localhost:%d/" % port)
     uvicorn.run(app, host="0.0.0.0", port=port)
