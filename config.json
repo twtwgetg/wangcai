@@ -25,5 +25,10 @@
   },
   "server": {
     "port": 9527
+  },
+  "search": {
+    "api_url": "http://localhost:9528/search",
+    "api_key": "",
+    "api_secret": ""
   }
 }

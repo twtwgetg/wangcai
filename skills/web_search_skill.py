@@ -1,16 +1,39 @@
 import json
+import os
 import re
+import sys
 import requests
 from skill import BaseSkill
 
-SEARXNG_URL = "http://localhost:9528/search"
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+from config import get_search_config
+
+
+def _search_url():
+    cfg = get_search_config()
+    return cfg.get("api_url", "http://localhost:9528/search")
+
+
+def _search_headers():
+    cfg = get_search_config()
+    headers = {}
+    key = cfg.get("api_key", "")
+    secret = cfg.get("api_secret", "")
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    if secret:
+        headers["X-API-Secret"] = secret
+    return headers
 
 
 def search_web(query, max_results=5):
     try:
         resp = requests.get(
-            SEARXNG_URL,
+            _search_url(),
             params={"q": query, "format": "json", "language": "zh-CN"},
+            headers=_search_headers(),
             timeout=15,
         )
         resp.raise_for_status()
@@ -31,7 +54,7 @@ def search_web(query, max_results=5):
         return "\n".join(lines)
 
     except requests.exceptions.ConnectionError:
-        return f"❌ 无法连接到搜索引擎 ({SEARXNG_URL})，请确认 SearXNG 服务是否已启动"
+        return f"❌ 无法连接到搜索引擎 ({_search_url()})，请确认服务是否已启动"
     except Exception as e:
         return f"❌ 搜索失败：{e}"
 
@@ -39,13 +62,14 @@ def search_web(query, max_results=5):
 def search_images(query, max_results=5):
     try:
         resp = requests.get(
-            SEARXNG_URL,
+            _search_url(),
             params={
                 "q": query,
                 "format": "json",
                 "categories": "images",
                 "language": "zh-CN",
             },
+            headers=_search_headers(),
             timeout=15,
         )
         resp.raise_for_status()
@@ -70,7 +94,7 @@ def search_images(query, max_results=5):
         return "\n".join(lines)
 
     except requests.exceptions.ConnectionError:
-        return f"❌ 无法连接到搜索引擎 ({SEARXNG_URL})，请确认 SearXNG 服务是否已启动"
+        return f"❌ 无法连接到搜索引擎 ({_search_url()})，请确认服务是否已启动"
     except Exception as e:
         return f"❌ 搜索图片失败：{e}"
 
@@ -112,7 +136,7 @@ class WebSearchSkill(BaseSkill):
     triggers = ["搜索", "搜一下", "搜搜", "查一下", "查查", "查找", "上网查", "上网搜", "百度一下"]
 
     async def execute(self, message, context=None):
-        match = re.search(r'\[TOOL_CALL\](.*?)\[/TOOL_CALL\]', message, re.DOTALL)
+        match = re.search(r'\[TOOL_CALL\](.*?)(?:\[/TOOL_CALL\]|$)', message, re.DOTALL)
         if match:
             try:
                 data = json.loads(match.group(1).strip())

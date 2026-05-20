@@ -41,8 +41,9 @@ def compress_messages(messages, max_tokens):
     if estimate_messages_tokens(messages) <= max_tokens:
         return messages
     keep_recent = get_memory_config().get("keep_recent_messages", 6)
-    if keep_recent > len(messages):
-        keep_recent = len(messages)
+    original_count = len(messages)
+    if keep_recent > original_count:
+        keep_recent = original_count
     recent = messages[-keep_recent:]
     older = messages[:-keep_recent]
     summary_text = ""
@@ -57,6 +58,15 @@ def compress_messages(messages, max_tokens):
             "content": f"[历史对话摘要]\n{summary_text.strip()}"
         })
     compressed.extend(recent)
+    if len(compressed) >= original_count and estimate_messages_tokens(compressed) > max_tokens:
+        total = estimate_messages_tokens(compressed)
+        ratio = max_tokens / total
+        for msg in compressed:
+            content = msg.get("content", "")
+            max_len = int(len(content) * ratio * 0.9)
+            if max_len > 0 and len(content) > max_len:
+                msg["content"] = content[:max_len] + "\n...(已截断)"
+        return compressed
     if estimate_messages_tokens(compressed) > max_tokens and len(compressed) > 2:
         return compress_messages(compressed, max_tokens)
     return compressed

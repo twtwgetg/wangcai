@@ -154,13 +154,19 @@ async def websocket_endpoint(websocket: WebSocket):
             elif msg_type == "get_character_detail":
                 name = message_data.get("name", "")
                 profile = char_mgr.get_profile(name)
+                detail_preview = str(profile.get("identity",""))[:50] if profile else "N/A"
+                print(f"[SVR] get_character_detail({name}) identity[:50]={detail_preview}")
                 await websocket.send_json({"type": "character_detail", "data": profile})
 
             elif msg_type == "save_character":
                 name = message_data.get("name", "")
                 profile = message_data.get("profile", {})
-                char_mgr.save_profile(name, profile)
-                await websocket.send_json({"type": "character_saved", "success": True, "name": name})
+                original_name = message_data.get("original_name") or name
+                incoming_identity = str(profile.get("identity",""))[:60]
+                print(f"[SVR] save_character ENTER name={name} original_name={original_name} identity[:60]={incoming_identity}")
+                success = char_mgr.save_profile(name, profile, original_name)
+                print(f"[SVR] save_character DONE success={success}")
+                await websocket.send_json({"type": "character_saved", "success": success, "name": name})
 
             elif msg_type == "delete_character":
                 name = message_data.get("name", "")
@@ -481,50 +487,121 @@ async def send_to_llm(message: str, session_id: str, on_chunk, source: str = "we
                     except json.JSONDecodeError:
                         continue
 
-        tool_match = re.search(r'\[TOOL_CALL\](.*?)\[/TOOL_CALL\]', full_response, re.DOTALL)
-        if tool_match:
-            tool_result = await skill_engine.execute_tool_call(full_response, {"session_id": session_id})
-            if tool_result:
-                clean_response = re.sub(r'\s*\[TOOL_CALL\].*?\[/TOOL_CALL\]\s*', '', full_response, flags=re.DOTALL).strip()
-                if on_reset:
-                    await on_reset()
-                mem_mgr.pop_last_assistant(session_id)
-                messages.append({"role": "assistant", "content": clean_response or "(调用了工具)"})
-                messages.append({"role": "user", "content": f"工具执行结果：\n{tool_result}\n\n请根据工具执行结果，用中文整理一份完整的回复给用户。不要提及工具调用的技术细节，直接告诉用户结果。"})
+        def _check_hallucination(text):
+            if re.search(r'\[TOOL_CALL\]', text):
+                return False
+            action_words = r'(?:删除|创建|复制|移动|重命名|新建)'
+            result_words = r'(?:成功|完成|好了|已经|已)'
+            if re.search(f'{result_words}.*{action_words}', text):
+                return True
+            if re.search(f'{action_words}.*{result_words}', text):
+                return True
+            return False
 
-                formatted = ""
-                async with httpx.AsyncClient(timeout=120.0) as client2:
-                    resp2 = await client2.post(
-                        f"{MODEL_API_URL}/chat/completions",
-                        headers=headers,
-                        json={
-                            "model": MODEL_NAME,
-                            "messages": messages,
-                            "stream": True,
-                            "temperature": llm_config.get("temperature", 0.7),
-                            "max_tokens": llm_config.get("max_tokens", 2048),
-                        },
-                    )
-                    async for line in resp2.aiter_lines():
-                        if line.startswith("data: "):
-                            ds = line[6:]
-                            if ds == "[DONE]":
-                                break
-                            try:
-                                d = json.loads(ds)
-                                c = d.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                                if c:
-                                    formatted += c
-                                    await on_chunk(c)
-                            except json.JSONDecodeError:
-                                continue
-                full_response = formatted
+        for _ in range(2):
+            if not _check_hallucination(full_response):
+                break
+            if on_reset:
+                await on_reset()
+            messages.pop()
+            messages.append({"role": "user", "content": f"用户要求：{message}\n\n请使用 [TOOL_CALL] 工具来执行文件操作，不要自行编造结果。"})
+            full_response = ""
+            async with httpx.AsyncClient(timeout=120.0) as client_h:
+                resp_h = await client_h.post(
+                    f"{MODEL_API_URL}/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": MODEL_NAME,
+                        "messages": messages,
+                        "stream": True,
+                        "temperature": llm_config.get("temperature", 0.7),
+                        "max_tokens": llm_config.get("max_tokens", 2048),
+                    },
+                )
+                async for line in resp_h.aiter_lines():
+                    if line.startswith("data: "):
+                        ds = line[6:]
+                        if ds == "[DONE]":
+                            break
+                        try:
+                            d = json.loads(ds)
+                            c = d.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                            if c:
+                                full_response += c
+                                await on_chunk(c)
+                        except json.JSONDecodeError:
+                            continue
+
+        max_tool_rounds = 5
+        tool_round = 0
+
+        while True:
+            tool_match = re.search(r'\[TOOL_CALL\](.*?)(?:\[/TOOL_CALL\]|$)', full_response, re.DOTALL)
+            if not tool_match:
+                break
+            raw_call = tool_match.group(1).strip()
+            if not raw_call:
+                break
+
+            tool_result = await skill_engine.execute_tool_call(full_response, {"session_id": session_id})
+            if not tool_result:
+                break
+
+            tool_round += 1
+
+            if on_reset:
+                await on_reset()
+
+            if tool_result.startswith("❌") or tool_result.startswith("📂") or tool_result.startswith("✅") or tool_result.startswith("📄") or tool_result.startswith("🗑️") or tool_result.startswith("╔══") or tool_result.startswith("🎵") or tool_result.startswith("⏹️") or "[IMG]" in tool_result:
+                full_response = tool_result
+                await on_chunk(tool_result)
+                break
+
+            char_mgr.reload_current()
+            new_system = char_mgr.build_system_prompt(memory_summary)
+            tools_prompt = skill_engine.get_tools_prompt()
+            if tools_prompt:
+                new_system += "\n\n" + tools_prompt
+            messages[0] = {"role": "system", "content": new_system}
+
+            messages.pop()  # remove original user message
+            assistant_part = re.sub(r'\s*\[TOOL_CALL\].*?(?:\[/TOOL_CALL\]|$)\s*', '', full_response, flags=re.DOTALL).strip()
+            messages.append({"role": "assistant", "content": assistant_part or "正在处理..."})
+            messages.append({"role": "user", "content": f"工具已执行完成，结果如下：\n{tool_result}\n\n请直接用中文回复用户，把结果整理成易读的格式。不要调用任何工具。"})
+
+            formatted = ""
+            async with httpx.AsyncClient(timeout=120.0) as client_n:
+                resp_n = await client_n.post(
+                    f"{MODEL_API_URL}/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": MODEL_NAME,
+                        "messages": messages,
+                        "stream": True,
+                        "temperature": llm_config.get("temperature", 0.7),
+                        "max_tokens": llm_config.get("max_tokens", 2048),
+                    },
+                )
+                async for line in resp_n.aiter_lines():
+                    if line.startswith("data: "):
+                        ds = line[6:]
+                        if ds == "[DONE]":
+                            break
+                        try:
+                            d = json.loads(ds)
+                            c = d.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                            if c:
+                                formatted += c
+                                await on_chunk(c)
+                        except json.JSONDecodeError:
+                            continue
+            full_response = formatted
+
+            if tool_round >= max_tool_rounds:
+                break
 
         mem_mgr.add_assistant_message(session_id, full_response)
         mem_mgr.save_all()
-
-        if tool_match:
-            char_mgr.reload_current()
 
         asyncio.ensure_future(extract_key_points(session_id, message, full_response))
 
@@ -666,6 +743,49 @@ async def api_feishu_lookup_user(params: dict = None):
         return {"success": False, "error": "请输入邮箱或手机号"}
     result = await feishu_bot.lookup_user(email=email or None, mobile=mobile or None)
     return result
+
+
+@app.get("/api/debug/character/{name}")
+async def api_debug_character(name: str):
+    profile = char_mgr.get_profile(name)
+    chars = char_mgr.list_characters()
+    file_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "characters", f"{name}.json"
+    )
+    file_exists = os.path.exists(file_path)
+    disk_content = None
+    if file_exists:
+        with open(file_path, "r", encoding="utf-8") as f:
+            disk_content = json.load(f)
+    return {
+        "current_name": char_mgr.get_current_name(),
+        "profiles_keys": list(char_mgr.profiles.keys()),
+        "characters_dir": os.path.join(os.path.dirname(os.path.abspath(__file__)), "characters"),
+        "requested_profile_in_memory": profile,
+        "file_path": file_path,
+        "file_exists": file_exists,
+        "disk_content": disk_content,
+        "character_list": chars,
+    }
+
+
+@app.get("/api/debug/save_test")
+async def api_debug_save_test():
+    from datetime import datetime
+    test_profile = {
+        "name": "debug_test",
+        "identity": "Debug test save at " + datetime.now().strftime("%H:%M:%S"),
+        "traits": ["test"],
+        "rules": [],
+        "knowledge": [],
+    }
+    ok = char_mgr.save_profile("debug_test_char", test_profile)
+    after = char_mgr.get_profile("debug_test_char")
+    return {
+        "save_result": ok,
+        "after_memory": after,
+        "characters_dir": os.path.join(os.path.dirname(os.path.abspath(__file__)), "characters"),
+    }
 
 
 @app.get("/api/status")

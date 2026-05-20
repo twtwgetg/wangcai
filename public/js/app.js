@@ -3,6 +3,7 @@ class ChatApp {
     this.ws = null;
     this.sessionId = 'session_' + Date.now();
     this.currentCharName = '旺财';
+    this._isNewCharacter = false;
     this.reconnectTimer = null;
     this.init();
   }
@@ -212,7 +213,7 @@ class ChatApp {
         break;
       case 'character_saved':
         this.showToast('角色已保存');
-        this.loadCharacters();
+        this.refreshCharacterList();
         break;
       case 'character_deleted':
         this.showToast(data.success ? '角色已删除' : '删除失败');
@@ -346,6 +347,12 @@ class ChatApp {
   }
 
   loadCharacters() {
+    this._skipDetailReload = false;
+    this.send('get_characters', {});
+  }
+
+  refreshCharacterList() {
+    this._skipDetailReload = true;
     this.send('get_characters', {});
   }
 
@@ -364,8 +371,11 @@ class ChatApp {
       this.currentCharName = current.display_name;
       this.currentCharNameEl.textContent = current.display_name;
       this.currentCharDescEl.textContent = current.description;
-      this.loadCharacterDetail(current.name);
+      if (!this._skipDetailReload) {
+        this.loadCharacterDetail(current.name);
+      }
     }
+    this._skipDetailReload = false;
   }
 
   loadCharacterDetail(name) {
@@ -384,25 +394,30 @@ class ChatApp {
 
   switchCharacter() {
     const name = this.characterSelect.value;
+    this._isNewCharacter = false;
     this.send('switch_character', { name });
   }
 
   saveCharacter() {
-    const name = this.charName.value.trim();
-    if (!name) {
+    const display_name = this.charName.value.trim();
+    if (!display_name) {
       this.showToast('请输入角色名称');
       return;
     }
+    const key = this._isNewCharacter ? display_name : this.characterSelect.value;
+    const original_name = this._isNewCharacter ? null : this.characterSelect.value;
     const profile = {
-      name: name,
+      name: display_name,
       description: this.charDesc.value.trim(),
       identity: this.charIdentity.value.trim(),
       traits: this.charTraits.value.split(/[、,，]/).map(s => s.trim()).filter(Boolean),
       rules: this.charRules.value.split('\n').map(s => s.trim()).filter(Boolean),
       knowledge: this.charKnowledge.value.split('\n').map(s => s.trim()).filter(Boolean),
-      example_dialogs: [],
     };
-    this.send('save_character', { name, profile });
+    const msg = { name: key, profile };
+    if (original_name) msg.original_name = original_name;
+    this.send('save_character', msg);
+    this._isNewCharacter = false;
   }
 
   deleteCharacter() {
@@ -417,6 +432,7 @@ class ChatApp {
   }
 
   newCharacter() {
+    this._isNewCharacter = true;
     this.charName.value = '新角色';
     this.charDesc.value = '';
     this.charIdentity.value = '';

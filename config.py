@@ -32,3 +32,11 @@ def get_feishu_config():
 
 def get_server_config():
     return load_config().get("server", {})
+
+
+def get_search_config():
+    return load_config().get("search", {
+        "api_url": "http://localhost:9528/search",
+        "api_key": "",
+        "api_secret": "",
+    })

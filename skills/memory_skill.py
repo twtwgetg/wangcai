@@ -265,7 +265,7 @@ class MemorySkill(BaseSkill):
         session_id = (context or {}).get("session_id", "default")
 
         # TOOL_CALL 模式
-        match = re.search(r'\[TOOL_CALL\](.*?)\[/TOOL_CALL\]', message, re.DOTALL)
+        match = re.search(r'\[TOOL_CALL\](.*?)(?:\[/TOOL_CALL\]|$)', message, re.DOTALL)
         if match:
             try:
                 data = json.loads(match.group(1).strip())
@@ -274,8 +274,10 @@ class MemorySkill(BaseSkill):
                 if tool_name in ("remember", "recall", "delete_memo"):
                     params["session_id"] = session_id
                 result = execute_memory_tool(tool_name, params)
-                if result:
+                if result is not None:
                     return result
+                # TOOL_CALL 存在但不是记忆工具 → 跳过关键词兜底，让其他技能处理
+                return None
             except json.JSONDecodeError:
                 pass
 

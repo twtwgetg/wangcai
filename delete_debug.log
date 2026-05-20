@@ -1,0 +1,5 @@
+[2026-05-18T20:56:38.846624] delete_folder called: path='F:/models'
+[2026-05-18T20:56:38.847646]   -> rmdir failed: [WinError 145] 目录不是空的。: 'F:/models', trying rmtree
+[2026-05-18T20:56:38.848665]   -> items before rmtree: ['check.txt']
+[2026-05-18T20:56:38.849665]   -> rmtree done, still exists: False
+[2026-05-18T20:56:38.850667]   -> final check, exists: False

@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import shutil
 import time
 from datetime import datetime
 from skill import BaseSkill
@@ -92,11 +93,65 @@ def delete_file(path):
     return f"❌ 文件不存在：{path}"
 
 
+def _rmtree_handler(func, path, exc_info):
+    try:
+        os.chmod(path, 0o777)
+        func(path)
+    except Exception as e2:
+        raise OSError(f"无法删除 {path}：{e2}")
+
+
 def delete_folder(path):
-    if os.path.isdir(path):
+    if not os.path.isdir(path):
+        return f"❌ 目录不存在：{path}"
+    try:
         os.rmdir(path)
-        return f"✅ 已删除空目录：{path}"
-    return f"❌ 目录不存在或非空：{path}"
+    except OSError:
+        try:
+            shutil.rmtree(path, onerror=_rmtree_handler)
+        except Exception as e:
+            return f"❌ 删除失败：{e}"
+    if os.path.isdir(path):
+        return f"❌ 删除后目录仍然存在（可能被重建或权限不足）：{path}"
+    return f"✅ 已删除目录：{path}"
+
+
+def find_empty_dirs(path, max_depth=5):
+    """递归查找指定路径下的空文件夹"""
+    if not os.path.exists(path):
+        return f"❌ 路径不存在：{path}"
+    if not os.path.isdir(path):
+        return f"❌ 不是目录：{path}"
+
+    empty_list = []
+
+    def scan(current, depth):
+        if depth > max_depth:
+            return
+        try:
+            items = os.listdir(current)
+            if not items:
+                empty_list.append(current)
+                return
+            for item in items:
+                full = os.path.join(current, item)
+                if os.path.isdir(full):
+                    scan(full, depth + 1)
+        except PermissionError:
+            pass
+        except OSError:
+            pass
+
+    scan(path, 0)
+
+    if not empty_list:
+        return f"在 {path} 下未找到空文件夹（扫描深度 {max_depth} 层）"
+
+    lines = [f"📂 在 {path} 下找到 {len(empty_list)} 个空文件夹：\n"]
+    for d in sorted(empty_list):
+        lines.append(f"  📁 {d}")
+    lines.append(f"\n共 {len(empty_list)} 个空文件夹")
+    return "\n".join(lines)
 
 
 FILE_TOOLS = {
@@ -115,6 +170,11 @@ FILE_TOOLS = {
         "description": "列出目录下的文件和子目录",
         "params": {"path": "目录路径"},
     },
+    "find_empty_dirs": {
+        "fn": find_empty_dirs,
+        "description": "递归查找指定路径下的所有空文件夹",
+        "params": {"path": "要扫描的目录路径（如 F:/）"},
+    },
     "delete_file": {
         "fn": delete_file,
         "description": "删除文件",
@@ -122,7 +182,7 @@ FILE_TOOLS = {
     },
     "delete_folder": {
         "fn": delete_folder,
-        "description": "删除空目录",
+        "description": "删除目录（空目录用os.rmdir，非空目录自动递归删除）",
         "params": {"path": "目录路径"},
     },
 }
@@ -148,7 +208,10 @@ def get_tools_prompt():
         '  用户：把我C盘根目录列一下',
         '  你：[TOOL_CALL]{"tool":"list_dir","params":{"path":"C:/"}}[/TOOL_CALL]',
         '',
-        "记住：工具调用后你会看到执行结果，然后你回复用户结果即可。",
+        '  用户：看下F盘哪些文件夹是空的',
+        '  你：[TOOL_CALL]{"tool":"find_empty_dirs","params":{"path":"F:/"}}[/TOOL_CALL]',
+        '',
+        "重要规则：每次只调用一个工具，收到结果后直接回复用户，不要再调用第二个工具。",
     ])
     return "\n".join(lines)
 
@@ -198,11 +261,14 @@ class FileOpsSkill(BaseSkill):
     triggers = ["创建文件夹", "创建目录", "列出", "列一下", "文件夹列", "目录列", "列目录", "盘根目录", "文件列表", "列表"]
 
     async def execute(self, message, context=None):
-        match = re.search(r'\[TOOL_CALL\](.*?)\[/TOOL_CALL\]', message, re.DOTALL)
+        match = re.search(r'\[TOOL_CALL\](.*?)(?:\[/TOOL_CALL\]|$)', message, re.DOTALL)
         if match:
             try:
                 data = json.loads(match.group(1).strip())
-                return execute_file_tool(data.get("tool"), data.get("params", {}))
+                tool_name = data.get("tool", "")
+                if tool_name in FILE_TOOLS:
+                    return execute_file_tool(tool_name, data.get("params", {}))
+                return None
             except json.JSONDecodeError as e:
                 return f"❌ 工具调用格式错误：{e}"
 
