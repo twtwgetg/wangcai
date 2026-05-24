@@ -1,9 +1,7 @@
 package com.wangcai.app
 
 import android.os.Bundle
-import android.view.View
 import android.view.inputmethod.EditorInfo
-import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.wangcai.app.databinding.ActivityMainBinding
@@ -16,6 +14,7 @@ class MainActivity : AppCompatActivity() {
     private var currentBotIndex = -1
     private var isConnected = false
     private var isReceiving = false
+    private var isRelayMode = false
 
     private lateinit var client: WangcaiClient
 
@@ -32,8 +31,9 @@ class MainActivity : AppCompatActivity() {
         client = WangcaiClient(
             onConnected = {
                 isConnected = true
-                binding.statusText.text = "已连接"
+                binding.statusText.text = if (isRelayMode) "已连接(中继)" else "已连接"
                 binding.connectBtn.text = "断开"
+                binding.modeToggle.isEnabled = false
                 addBotMessage("已连接到服务器")
             },
             onDisconnected = {
@@ -41,13 +41,13 @@ class MainActivity : AppCompatActivity() {
                 isReceiving = false
                 binding.statusText.text = "未连接"
                 binding.connectBtn.text = "连接"
+                binding.modeToggle.isEnabled = true
             },
             onChunk = { chunk ->
                 if (!isReceiving) {
                     isReceiving = true
                     currentBotIndex = messages.size
                     messages.add(ChatMessage(chunk, isUser = false, isStreaming = true))
-                    adapter.submitList(messages.toList())
                 } else {
                     val last = messages.lastOrNull()
                     if (last != null && last.isStreaming) {
@@ -56,8 +56,8 @@ class MainActivity : AppCompatActivity() {
                         currentBotIndex = messages.size
                         messages.add(ChatMessage(chunk, isUser = false, isStreaming = true))
                     }
-                    adapter.submitList(messages.toList())
                 }
+                adapter.submitList(messages.toList())
                 binding.chatRecycler.smoothScrollToPosition(adapter.itemCount - 1)
             },
             onDone = {
@@ -81,16 +81,25 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        binding.modeToggle.setOnCheckedChangeListener { _, isRelay ->
+            isRelayMode = isRelay
+            if (isRelay) {
+                binding.serverUrl.hint = "中继地址 (ws://your-server:8080)"
+                binding.serverUrl.setText(getSavedUrl("relay_url"))
+            } else {
+                binding.serverUrl.hint = "服务器地址 (ws://192.168.1.100:9527/ws)"
+                binding.serverUrl.setText(getSavedUrl("direct_url"))
+            }
+        }
+
         binding.messageInput.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == EditorInfo.IME_ACTION_SEND) {
-                sendMessage()
-                true
-            } else false
+            if (actionId == EditorInfo.IME_ACTION_SEND) { sendMessage(); true }
+            else false
         }
 
         binding.sendBtn.setOnClickListener { sendMessage() }
 
-        loadSavedUrl()
+        loadSavedState()
     }
 
     private fun connectToServer() {
@@ -102,11 +111,24 @@ class MainActivity : AppCompatActivity() {
         if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
             url = "ws://$url"
         }
-        binding.statusText.text = "连接中..."
+        binding.statusText.text = if (isRelayMode) "连接中继中..." else "连接中..."
         binding.connectBtn.isEnabled = false
-        getSharedPreferences("config", MODE_PRIVATE).edit()
-            .putString("server_url", url).apply()
-        client.connect(url)
+
+        val pref = getSharedPreferences("config", MODE_PRIVATE).edit()
+        if (isRelayMode) {
+            pref.putString("relay_url", url)
+            pref.putBoolean("relay_mode", true)
+        } else {
+            pref.putString("direct_url", url)
+            pref.putBoolean("relay_mode", false)
+        }
+        pref.apply()
+
+        if (isRelayMode) {
+            client.connectRelay(url)
+        } else {
+            client.connectDirect(url)
+        }
         binding.connectBtn.isEnabled = true
     }
 
@@ -127,12 +149,24 @@ class MainActivity : AppCompatActivity() {
         binding.chatRecycler.smoothScrollToPosition(adapter.itemCount - 1)
     }
 
-    private fun loadSavedUrl() {
-        val url = getSharedPreferences("config", MODE_PRIVATE)
-            .getString("server_url", "") ?: ""
-        if (url.isNotEmpty()) {
-            binding.serverUrl.setText(url)
+    private fun loadSavedState() {
+        val pref = getSharedPreferences("config", MODE_PRIVATE)
+        val relayMode = pref.getBoolean("relay_mode", false)
+        isRelayMode = relayMode
+        binding.modeToggle.isChecked = relayMode
+
+        val url = if (relayMode) {
+            binding.serverUrl.hint = "中继地址 (ws://your-server:8080)"
+            pref.getString("relay_url", "") ?: ""
+        } else {
+            binding.serverUrl.hint = "服务器地址 (ws://192.168.1.100:9527/ws)"
+            pref.getString("direct_url", "") ?: ""
         }
+        if (url.isNotEmpty()) binding.serverUrl.setText(url)
+    }
+
+    private fun getSavedUrl(key: String): String {
+        return getSharedPreferences("config", MODE_PRIVATE).getString(key, "") ?: ""
     }
 
     override fun onDestroy() {

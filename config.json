@@ -2,7 +2,7 @@
   "llm": {
     "api_url": "https://api.deepseek.com/v1",
     "model_name": "deepseek-chat",
-    "api_key": "sk-759e884669194d0f8853bbed22cccbe4",
+    "api_key": "sk-6b48233a3d564ee0982d565f1416c99c",
     "temperature": 0.7,
     "max_tokens": 2048
   },
@@ -30,5 +30,11 @@
     "api_url": "http://localhost:9528/search",
     "api_key": "",
     "api_secret": ""
+  },
+  "relay": {
+    "enabled": true,
+    "server_url": "ws://129.211.174.144:9527",
+    "token": "",
+    "auto_connect": true
   }
 }

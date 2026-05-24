@@ -20,15 +20,30 @@
             android:padding="8dp"
             android:gravity="center_vertical">
 
-            <EditText
-                android:id="@+id/serverUrl"
+            <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:hint="服务器地址 (ws://192.168.1.100:8000/ws)"
-                android:inputType="textUri"
-                android:padding="8dp"
-                android:textSize="14sp" />
+                android:orientation="vertical">
+
+                <EditText
+                    android:id="@+id/serverUrl"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="服务器地址 (ws://192.168.1.100:9527/ws)"
+                    android:inputType="textUri"
+                    android:padding="8dp"
+                    android:textSize="14sp" />
+
+                <com.google.android.material.switchmaterial.SwitchMaterial
+                    android:id="@+id/modeToggle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="中继模式"
+                    android:paddingHorizontal="8dp"
+                    android:textSize="12sp" />
+
+            </LinearLayout>
 
             <Button
                 android:id="@+id/connectBtn"

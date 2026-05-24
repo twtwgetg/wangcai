@@ -2,28 +2,12 @@ import json
 import os
 import random
 import re
-import subprocess
+import urllib.parse
 from skill import BaseSkill
 
 MUSIC_DIR = r"F:\音乐"
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".wma", ".m4a", ".ogg", ".aac", ".ape", ".opus"}
-
-_current_process = None
-
-WM_PLAYER = r"C:\Program Files (x86)\Windows Media Player\wmplayer.exe"
-
-MEDIA_PLAYERS = [
-    "wmplayer.exe", "vlc.exe", "mpc-hc.exe", "potplayer.exe",
-    "mpv.exe", "kmplayer.exe", "gpmdp.exe", "foobar2000.exe",
-    "Music.UI.exe", "smplayer.exe", "mplayer.exe",
-]
-
-
-def _kill_media_players():
-    for exe in MEDIA_PLAYERS:
-        subprocess.run(["taskkill", "/f", "/im", exe],
-                       capture_output=True, timeout=3)
 
 
 def _scan_music():
@@ -39,35 +23,17 @@ def _scan_music():
 
 
 def play_random_music():
-    global _current_process
-    stop_music()
     files = _scan_music()
     if not files:
         return "❌ F:\\音乐 目录下没有找到音乐文件"
     chosen = random.choice(files)
     name = os.path.basename(chosen)
-    try:
-        _current_process = subprocess.Popen([WM_PLAYER, chosen])
-    except FileNotFoundError:
-        _current_process = subprocess.Popen(["cmd", "/c", "start", "", chosen])
-    return f"▶️ 正在播放：{name}"
+    url = "/api/music/play?path=" + urllib.parse.quote(chosen)
+    return f"▶️ 正在播放：{name}\n[AUDIO]{url}[/AUDIO]"
 
 
 def stop_music():
-    global _current_process
-    if _current_process is not None:
-        try:
-            _current_process.terminate()
-            _current_process.wait(timeout=3)
-        except Exception:
-            try:
-                subprocess.run(["taskkill", "/f", "/t", "/pid", str(_current_process.pid)],
-                               capture_output=True, timeout=3)
-            except Exception:
-                pass
-        _current_process = None
-    _kill_media_players()
-    return "⏹️ 音乐已停止"
+    return "⏹️ 音乐已停止\n[AUDIO_STOP]"
 
 
 def get_tools_prompt():

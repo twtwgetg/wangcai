@@ -40,3 +40,12 @@ def get_search_config():
         "api_key": "",
         "api_secret": "",
     })
+
+
+def get_relay_config():
+    return load_config().get("relay", {
+        "enabled": False,
+        "server_url": "",
+        "token": "",
+        "auto_connect": False,
+    })

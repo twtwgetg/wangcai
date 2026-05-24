@@ -107,7 +107,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 session_id = message_data.get("session_id", session_id)
                 print(f"收到消息：{user_message[:50]}...")
 
-                if user_message.strip() == "/help":
+                msg_lower = user_message.strip().lower()
+                if msg_lower == "/help":
                     help_text = (
                         "📚 可用命令：\n\n"
                         "📱 /wechat \"联系人\" \"消息\" - 给微信联系人发送消息\n"
@@ -117,6 +118,13 @@ async def websocket_endpoint(websocket: WebSocket):
                         "💡 更多功能请在设置面板中配置"
                     )
                     await websocket.send_json({"type": "chunk", "content": help_text})
+                    await websocket.send_json({"type": "done"})
+                    continue
+
+                # pre-LLM video stop — avoid relying on LLM to call tool
+                if any(w in msg_lower for w in ["关闭视频", "停止播放", "关闭电影", "暂停视频"]):
+                    await websocket.send_json({"type": "video_stop"})
+                    await websocket.send_json({"type": "chunk", "content": "⏹️ 视频已关闭"})
                     await websocket.send_json({"type": "done"})
                     continue
 
@@ -436,14 +444,52 @@ async def send_to_llm(message: str, session_id: str, on_chunk, source: str = "we
     if summary:
         memory_summary += f"对话摘要：{summary}\n"
     if key_info:
-        memory_summary += "关键信息：\n" + "\n".join([f"- {k}" for k in key_info])
+        from memory import count_tokens
+        max_key_tokens = 300
+        items = []
+        for k in reversed(key_info):
+            item = f"- {k}"
+            if count_tokens("\n".join(items + [item])) > max_key_tokens:
+                break
+            items.append(item)
+        if items:
+            memory_summary += "关键信息：\n" + "\n".join(items)
+            if len(items) < len(key_info):
+                memory_summary += f"\n...及其他 {len(key_info) - len(items)} 条记忆"
     if digest:
         memory_summary += f"\n重点摘要：{digest}\n"
+
+    # 跨会话的全局习惯/偏好（_global.json）
+    _gpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory_store", "memos", "_global.json")
+    if os.path.exists(_gpath):
+        try:
+            with open(_gpath, "r", encoding="utf-8") as _gf:
+                _gmemos = json.load(_gf)
+            if _gmemos:
+                from memory import count_tokens as _ct
+                _gitems = []
+                for _gm in reversed(_gmemos):
+                    _line = f"- {_gm.get('content','')}"
+                    if _ct("\n".join(_gitems + [_line])) > 400:
+                        break
+                    _gitems.append(_line)
+                if _gitems:
+                    memory_summary += "\n用户习惯（跨会话长期记忆）：\n" + "\n".join(_gitems)
+        except Exception:
+            pass
 
     system_prompt = char_mgr.build_system_prompt(memory_summary)
     tools_prompt = skill_engine.get_tools_prompt()
     if tools_prompt:
         system_prompt += "\n\n" + tools_prompt
+    system_prompt += (
+        "\n\n【工具 - 长期记忆】\n"
+        "当用户要求你记住某些信息时（如「记住我的生日是5月20日」），使用 save_memory 将内容存入会话级长期记忆。\n"
+        "当用户告诉你他的习惯、偏好、常用设置时（如「我习惯早睡早起」「叫我王总」），使用 remember_global 存入跨会话的全局习惯。\n"
+        "调用格式：\n"
+        '[TOOL_CALL]{"tool":"save_memory","params":{"content":"用户的生日是5月20日"}}[/TOOL_CALL]\n'
+        '[TOOL_CALL]{"tool":"remember_global","params":{"content":"用户习惯：早睡早起","tags":"习惯"}}[/TOOL_CALL]\n'
+    )
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(condensed_messages)
@@ -543,7 +589,29 @@ async def send_to_llm(message: str, session_id: str, on_chunk, source: str = "we
             if not raw_call:
                 break
 
-            tool_result = await skill_engine.execute_tool_call(full_response, {"session_id": session_id})
+            # built-in tools
+            tool_result = None
+            try:
+                call_data = json.loads(raw_call)
+                tool_name = call_data.get("tool", "")
+                params = call_data.get("params", {})
+                if tool_name == "save_memory":
+                    content = params.get("content", "")
+                    if content:
+                        mem_mgr.add_key_info(session_id, content)
+                        mem_mgr.save_all()
+                        tool_result = f"✅ 已记住：{content}"
+                elif tool_name == "remember_global":
+                    try:
+                        from skills.memory_skill import remember_global
+                        tool_result = remember_global(params.get("content",""), params.get("tags",""))
+                    except Exception:
+                        tool_result = "❌ 保存全局记忆失败"
+            except json.JSONDecodeError:
+                pass
+
+            if not tool_result:
+                tool_result = await skill_engine.execute_tool_call(full_response, {"session_id": session_id, "on_chunk": on_chunk})
             if not tool_result:
                 break
 
@@ -552,7 +620,7 @@ async def send_to_llm(message: str, session_id: str, on_chunk, source: str = "we
             if on_reset:
                 await on_reset()
 
-            if tool_result.startswith("❌") or tool_result.startswith("📂") or tool_result.startswith("✅") or tool_result.startswith("📄") or tool_result.startswith("🗑️") or tool_result.startswith("╔══") or tool_result.startswith("🎵") or tool_result.startswith("⏹️") or "[IMG]" in tool_result:
+            if tool_result.startswith("❌") or tool_result.startswith("📂") or tool_result.startswith("✅") or tool_result.startswith("📄") or tool_result.startswith("🗑️") or tool_result.startswith("╔══") or tool_result.startswith("🎵") or tool_result.startswith("⏹️") or tool_result.startswith("▶️") or "[IMG]" in tool_result or "[AUDIO]" in tool_result or "[AUDIO_STOP]" in tool_result or "[VIDEO]" in tool_result or "[VIDEO_STOP]" in tool_result:
                 full_response = tool_result
                 await on_chunk(tool_result)
                 break
@@ -745,6 +813,83 @@ async def api_feishu_lookup_user(params: dict = None):
     return result
 
 
+@app.get("/api/music/play")
+async def music_play(request: Request):
+    path = request.query_params.get("path", "")
+    if not path or not os.path.exists(path):
+        return JSONResponse({"error": "file not found"}, status_code=404)
+    ext = os.path.splitext(path)[1].lower()
+    mime = {
+        ".mp3": "audio/mpeg", ".wav": "audio/wav", ".flac": "audio/flac",
+        ".ogg": "audio/ogg", ".m4a": "audio/mp4", ".aac": "audio/aac",
+        ".wma": "audio/x-ms-wma", ".ape": "audio/x-ape", ".opus": "audio/ogg",
+    }.get(ext, "audio/mpeg")
+    from fastapi.responses import FileResponse
+    return FileResponse(path, media_type=mime, filename=os.path.basename(path),
+                        headers={"Accept-Ranges": "bytes", "Cache-Control": "no-cache"})
+
+
+@app.get("/api/video/play")
+async def video_play(request: Request):
+    path = request.query_params.get("path", "")
+    if not path or not os.path.exists(path):
+        return JSONResponse({"error": "file not found"}, status_code=404)
+    ext = os.path.splitext(path)[1].lower()
+    from fastapi.responses import FileResponse, StreamingResponse
+    mime = {
+        ".mp4": "video/mp4", ".webm": "video/webm", ".ogg": "video/ogg",
+        ".avi": "video/x-msvideo", ".wmv": "video/x-ms-wmv", ".flv": "video/x-flv",
+        ".mov": "video/quicktime", ".m4v": "video/mp4",
+    }.get(ext, "application/octet-stream")
+    file_size = os.path.getsize(path)
+    range_header = request.headers.get("range")
+
+    # MKV often has AC3/DTS audio unsupported in browsers -- transcode audio to AAC on the fly via ffmpeg
+    if ext == ".mkv":
+        cmd = ["ffmpeg", "-i", path, "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+               "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"]
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+
+        async def ffmpeg_stream():
+            try:
+                while True:
+                    chunk = await process.stdout.read(65536)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                if process.returncode is None:
+                    process.kill()
+                await process.wait()
+        return StreamingResponse(ffmpeg_stream(), media_type="video/mp4",
+                                 headers={"Cache-Control": "no-cache",
+                                          "Content-Disposition": "inline"})
+
+    if range_header:
+        start_str = range_header.replace("bytes=", "").split("-")[0]
+        start = int(start_str) if start_str.isdigit() else 0
+        end = min(start + 1024 * 1024, file_size - 1)
+        if start >= file_size:
+            return JSONResponse(status_code=416)
+        async def ranged_stream():
+            with open(path, "rb") as f:
+                f.seek(start)
+                remaining = end - start + 1
+                while remaining:
+                    chunk = f.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+        return StreamingResponse(ranged_stream(), status_code=206, media_type=mime, headers={
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Content-Length": str(end - start + 1), "Accept-Ranges": "bytes",
+            "Content-Disposition": "inline"})
+    return FileResponse(path, media_type=mime, filename=os.path.basename(path),
+                        headers={"Accept-Ranges": "bytes", "Cache-Control": "no-cache", "Content-Disposition": "inline"})
+
+
 @app.get("/api/debug/character/{name}")
 async def api_debug_character(name: str):
     profile = char_mgr.get_profile(name)
@@ -806,6 +951,28 @@ async def api_status():
 async def on_startup():
     init_feishu()
     await start_feishu_ws()
+    from config import get_relay_config
+    rc = get_relay_config()
+    if rc.get("enabled") and rc.get("auto_connect"):
+        from relay_client import get_relay as _get_relay, ensure_connected
+        ok = await ensure_connected()
+        print(f"[Relay] {'Connected' if ok else 'Connect failed'} to {rc.get('server_url', '')}")
+        if ok:
+            _relay = _get_relay()
+
+            async def _relay_msg_handler(session_id, msg, reply, send_done):
+                """Process incoming relay messages through LLM pipeline."""
+                async def _on_chunk(chunk):
+                    await reply(chunk)
+
+                async def _on_reset():
+                    pass
+
+                await send_to_llm(msg, session_id, _on_chunk, source="relay", on_reset=_on_reset)
+                await send_done()
+
+            _relay.set_message_handler(_relay_msg_handler)
+            print("[Relay] Message handler registered")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,12 @@
+{
+  "name": "wangcai-relay-server",
+  "version": "1.0.0",
+  "description": "WebSocket relay server for 旺财 app-agent communication",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}

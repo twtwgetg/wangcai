@@ -1,3 +1,6 @@
 /__pycache__
 /.ruff_cache
 /memory_store
+/app/app/build
+/public
+/skills/__pycache__
