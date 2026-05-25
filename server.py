@@ -5,6 +5,7 @@ import json
 import asyncio
 import logging
 import sys
+import subprocess
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -16,6 +17,24 @@ from config import load_config, save_config, get_llm_config, get_server_config
 from character import CharacterManager
 from memory import MemoryManager
 from skill import SkillEngine
+
+_stt_process = None
+
+
+def _start_stt_server():
+    global _stt_process
+    py310 = r"C:\Users\xuqua\miniconda3\envs\py310\python.exe"
+    if not os.path.exists(py310):
+        print("[STT] py310 not found, skipping STT server")
+        return
+    script = os.path.join(os.path.dirname(__file__), "relay_server", "stt_server.py")
+    log = open(os.path.join(os.path.dirname(__file__), "stt_stdout.log"), "w", encoding="utf-8")
+    try:
+        _stt_process = subprocess.Popen([py310, "-u", script], stdout=log, stderr=subprocess.STDOUT)
+        print(f"[STT] Server started (PID {_stt_process.pid})")
+    except Exception as e:
+        print(f"[STT] Failed to start: {e}")
+
 
 app = FastAPI(title="旺财 AI 助手")
 
@@ -88,6 +107,42 @@ async def root():
         return HTMLResponse(content=f.read())
 
 
+async def _handle_audio_bytes(websocket, audio_bytes, session_id):
+    """Transcribe binary audio and process as chat message."""
+    import aiohttp
+    text = ""
+    try:
+        async with aiohttp.ClientSession() as session:
+            data = aiohttp.FormData()
+            data.add_field("file", audio_bytes, filename="audio.webm", content_type="audio/webm")
+            async with session.post("http://127.0.0.1:9528/stt", data=data,
+                                    timeout=aiohttp.ClientTimeout(60)) as resp:
+                if resp.status != 200:
+                    await websocket.send_json({"type": "chunk", "content": "❌ 语音识别失败"})
+                    await websocket.send_json({"type": "done"})
+                    return
+                result = await resp.json()
+                text = result.get("text", "").strip()
+                if not text:
+                    await websocket.send_json({"type": "chunk", "content": "❌ 未识别到语音"})
+                    await websocket.send_json({"type": "done"})
+                    return
+    except Exception as e:
+        await websocket.send_json({"type": "chunk", "content": f"❌ 语音服务异常: {e}"})
+        await websocket.send_json({"type": "done"})
+        return
+
+    async def handle_chunk(chunk):
+        await websocket.send_json({"type": "chunk", "content": chunk})
+    async def handle_reset():
+        pass
+    try:
+        await send_to_llm(text, session_id, handle_chunk, source="web", on_reset=handle_reset)
+    except Exception as e:
+        await websocket.send_json({"type": "chunk", "content": f"❌ LLM 处理失败: {e}"})
+    await websocket.send_json({"type": "done"})
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -98,7 +153,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         while True:
-            data = await websocket.receive_text()
+            raw = await websocket.receive()
+            if raw.get("bytes"):
+                await _handle_audio_bytes(websocket, raw["bytes"], session_id)
+                continue
+            data = raw.get("text", "")
+            if not data:
+                continue
             message_data = json.loads(data)
             msg_type = message_data.get("type", "chat")
 
@@ -484,11 +545,12 @@ async def send_to_llm(message: str, session_id: str, on_chunk, source: str = "we
         system_prompt += "\n\n" + tools_prompt
     system_prompt += (
         "\n\n【工具 - 长期记忆】\n"
-        "当用户要求你记住某些信息时（如「记住我的生日是5月20日」），使用 save_memory 将内容存入会话级长期记忆。\n"
-        "当用户告诉你他的习惯、偏好、常用设置时（如「我习惯早睡早起」「叫我王总」），使用 remember_global 存入跨会话的全局习惯。\n"
+        "当用户要求你「记住」任何信息时（生日、称呼、偏好、习惯等），一律使用 remember_global 存入跨会话长期记忆。\n"
+        "当用户要求你「忘记/删除」某些信息时，使用 forget_global 删除对应的长期记忆。\n"
+        "这是强制要求：用户说「记住XX」时你必须调用工具，不能只是口头答应。\n"
         "调用格式：\n"
-        '[TOOL_CALL]{"tool":"save_memory","params":{"content":"用户的生日是5月20日"}}[/TOOL_CALL]\n'
-        '[TOOL_CALL]{"tool":"remember_global","params":{"content":"用户习惯：早睡早起","tags":"习惯"}}[/TOOL_CALL]\n'
+        '[TOOL_CALL]{"tool":"remember_global","params":{"content":"用户的生日是1979年7月3日","tags":"用户信息"}}[/TOOL_CALL]\n'
+        '[TOOL_CALL]{"tool":"forget_global","params":{"content":"生日"}}[/TOOL_CALL]\n'
     )
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -595,18 +657,18 @@ async def send_to_llm(message: str, session_id: str, on_chunk, source: str = "we
                 call_data = json.loads(raw_call)
                 tool_name = call_data.get("tool", "")
                 params = call_data.get("params", {})
-                if tool_name == "save_memory":
-                    content = params.get("content", "")
-                    if content:
-                        mem_mgr.add_key_info(session_id, content)
-                        mem_mgr.save_all()
-                        tool_result = f"✅ 已记住：{content}"
-                elif tool_name == "remember_global":
+                if tool_name == "remember_global":
                     try:
                         from skills.memory_skill import remember_global
                         tool_result = remember_global(params.get("content",""), params.get("tags",""))
                     except Exception:
                         tool_result = "❌ 保存全局记忆失败"
+                elif tool_name == "forget_global":
+                    try:
+                        from skills.memory_skill import forget_global
+                        tool_result = forget_global(params.get("content",""))
+                    except Exception:
+                        tool_result = "❌ 删除记忆失败"
             except json.JSONDecodeError:
                 pass
 
@@ -949,6 +1011,7 @@ async def api_status():
 
 @app.on_event("startup")
 async def on_startup():
+    _start_stt_server()
     init_feishu()
     await start_feishu_ws()
     from config import get_relay_config
@@ -962,7 +1025,23 @@ async def on_startup():
 
             async def _relay_msg_handler(session_id, msg, reply, send_done):
                 """Process incoming relay messages through LLM pipeline."""
+                _audio_dir = os.path.join(os.path.dirname(__file__), "public", "audio")
+
                 async def _on_chunk(chunk):
+                    # Intercept [AUDIO] tags — read file and send base64
+                    audio_match = re.search(r'\[AUDIO\](/static/audio/[^[]+)\[/AUDIO\]', chunk)
+                    if audio_match:
+                        rel_path = audio_match.group(1).lstrip("/static/")
+                        file_path = os.path.join(os.path.dirname(__file__), rel_path.replace("/", os.sep))
+                        if os.path.exists(file_path):
+                            import base64
+                            with open(file_path, "rb") as f:
+                                b64 = base64.b64encode(f.read()).decode()
+                            chunk = chunk.replace(audio_match.group(0), "")
+                            if chunk.strip():
+                                await reply(chunk)
+                            await reply(f'[AUDIO_BASE64]{b64}[/AUDIO_BASE64]')
+                            return
                     await reply(chunk)
 
                 async def _on_reset():
@@ -973,6 +1052,11 @@ async def on_startup():
 
             _relay.set_message_handler(_relay_msg_handler)
             print("[Relay] Message handler registered")
+
+            async def _relay_auto_reconnect():
+                await _relay.auto_reconnect()
+
+            asyncio.create_task(_relay_auto_reconnect())
 
 
 if __name__ == "__main__":

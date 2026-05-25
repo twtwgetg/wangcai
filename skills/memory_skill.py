@@ -94,6 +94,17 @@ def remember_global(content, tags=""):
     return f"✅ 已记入长期记忆：{content[:60]}{'...' if len(content) > 60 else ''}"
 
 
+def forget_global(content):
+    memos = _load_json(GLOBAL_MEMO_PATH, [])
+    before = len(memos)
+    memos = [m for m in memos if content not in m["content"]]
+    removed = before - len(memos)
+    if removed == 0:
+        return f"❌ 未找到包含「{content}」的长期记忆"
+    _save_json(GLOBAL_MEMO_PATH, memos)
+    return f"✅ 已从长期记忆中移除 {removed} 条相关记录"
+
+
 # ─── 修改智能体设定 ───
 
 def _get_current_char_name():
@@ -164,6 +175,11 @@ CHAR_TOOLS = {
         "description": "保存长期记忆，跨会话有效",
         "params": {"content": "要记住的内容", "tags": "标签（可选）"},
     },
+    "forget_global": {
+        "fn": forget_global,
+        "description": "删除长期记忆",
+        "params": {"content": "要忘记的内容关键词"},
+    },
     "update_character_name": {
         "fn": update_character_name,
         "description": "修改我的名字",
@@ -217,8 +233,8 @@ ALL_TOOLS.update(CHAR_TOOLS)
 def get_tools_prompt():
     lines = [
         "\n【记忆与设定工具】你可以帮用户记录信息或修改自己的设定：",
-        "  📝 remember — 记录重要信息到当前会话",
-        "  🌐 remember_global — 记录跨会话的长期记忆",
+        "  🌐 remember_global — 记住用户信息（跨会话），用户说「记住」时必须用这个",
+        "  🗑️ forget_global — 忘记/删除用户信息，用户说「忘掉」时用",
         "  🔍 recall — 查询已记录的信息",
         "  ✏️ update_character_name — 用户要求你改名时调用",
         "  ✏️ update_character_identity — 用户要求改变身份时调用",
@@ -226,14 +242,14 @@ def get_tools_prompt():
         "  ✏️ add_character_knowledge — 用户告诉你新知识时调用",
         "  ✏️ add_character_trait — 用户说你有什么性格时调用",
         "",
-        "重要：当用户说「叫我XX」、「你以后要XX」、「记住我XX」等，你必须调用对应工具，不能只是口头答应。",
+        "重要：当用户说「叫我XX」、「记住我XX」、「以后要XX」等，你必须调用对应工具，不能只是口头答应。",
         "格式：",
         '  [TOOL_CALL]{"tool":"工具名","params":{"参数":"值"}}[/TOOL_CALL]',
         "示例：",
-        '  用户：叫我王总',
-        '  你：[TOOL_CALL]{"tool":"remember_global","params":{"content":"用户称呼：王总","tags":"用户信息"}}[/TOOL_CALL]',
-        '  用户：你以后要用粤语回答',
-        '  你：[TOOL_CALL]{"tool":"add_character_rule","params":{"rule":"用粤语回答用户"}}[/TOOL_CALL]',
+        '  用户：记住我的生日是1979年7月3日',
+        '  你：[TOOL_CALL]{"tool":"remember_global","params":{"content":"用户的出生日期：1979年7月3日","tags":"用户信息"}}[/TOOL_CALL]',
+        '  用户：忘掉我的生日',
+        '  你：[TOOL_CALL]{"tool":"forget_global","params":{"content":"出生日期"}}[/TOOL_CALL]',
     ]
     return "\n".join(lines)
 
@@ -259,7 +275,7 @@ class MemorySkill(BaseSkill):
     description = "记录/查询信息，修改智能体设定"
     triggers = ["记住", "记下来", "保存这条", "重要内容", "查一下", "我记得", "记录",
                 "叫我", "你以后", "你的名字", "你的身份", "你要记住", "别忘了",
-                "改名", "改名叫", "叫你"]
+                "改名", "改名叫", "叫你", "忘记", "忘掉", "删除记忆", "移除"]
 
     async def execute(self, message, context=None):
         session_id = (context or {}).get("session_id", "default")
@@ -282,6 +298,13 @@ class MemorySkill(BaseSkill):
                 pass
 
         # 关键词兜底
+        if re.search(r'(?:忘记|忘掉|删除记忆|移除记忆)', message):
+            content_match = re.search(r'(?:忘记|忘掉|删除记忆|移除记忆)[：:\s]*(.+)', message)
+            if content_match:
+                content = content_match.group(1).strip()
+                return forget_global(content)
+            return "请告诉我您想忘记什么内容"
+
         if re.search(r'(?:记住|记下来|保存|别忘了)', message):
             content_match = re.search(r'(?:记住|记下来|保存|别忘了)[：:\s]*(.+)', message)
             if content_match:

@@ -210,6 +210,10 @@ class CharacterManager:
         profile = self.get_current()
         parts = []
 
+        from datetime import datetime
+        parts.append(f"当前日期时间：{datetime.now().strftime('%Y年%m月%d日 %H:%M:%S')}（周{['一','二','三','四','五','六','日'][datetime.now().weekday()]}）")
+        parts.append("")
+
         identity = profile.get("identity", "你是旺财，一个智能 AI 助手。")
         parts.append(identity)
 

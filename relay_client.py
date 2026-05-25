@@ -44,10 +44,61 @@ class RelayClient:
         if self.ws:
             await self.ws.close()
 
+    async def _handle_audio(self, audio_data: bytes, session_id="relay_voice"):
+        """Transcribe binary audio via local STT server, then process as a chat message."""
+        import aiohttp
+        try:
+            async with aiohttp.ClientSession() as session:
+                data = aiohttp.FormData()
+                data.add_field("file", audio_data, filename="audio.webm", content_type="audio/webm")
+                async with session.post("http://127.0.0.1:9528/stt", data=data,
+                                        timeout=aiohttp.ClientTimeout(60)) as resp:
+                    if resp.status != 200:
+                        print(f"[Relay] STT http error: {resp.status}")
+                        return
+                    result = await resp.json()
+                    text = result.get("text", "").strip()
+                    if not text:
+                        return
+        except Exception as e:
+            print(f"[Relay] STT exception: {e}")
+            return
+
+        if not self._on_message:
+            return
+
+        async def reply(chunk: str):
+            if self.ws and self._connected:
+                try:
+                    await self.ws.send(json.dumps({
+                        "type": "chunk", "content": chunk, "session_id": session_id,
+                    }, ensure_ascii=False))
+                except Exception:
+                    pass
+
+        async def send_done():
+            if self.ws and self._connected:
+                try:
+                    await self.ws.send(json.dumps({
+                        "type": "done", "session_id": session_id,
+                    }))
+                except Exception:
+                    pass
+
+        await self._on_message(session_id, text, reply, send_done)
+
+    async def auto_reconnect(self):
+        while True:
+            if not self._connected:
+                print("[Relay] Reconnecting...")
+                await self.connect()
+            await asyncio.sleep(10)
+
     async def _listen(self):
         try:
             async for msg in self.ws:
                 if isinstance(msg, bytes):
+                    asyncio.create_task(self._handle_audio(msg))
                     continue
                 try:
                     data = json.loads(msg)
